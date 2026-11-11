@@ -30,7 +30,55 @@
     <link rel="stylesheet" href="assets/css/base.css">
     <link rel="stylesheet" href="assets/css/components.css">
 </head>
-<body>
+<body data-auth="pending">
+    <div class="auth-screen" id="auth-screen" hidden>
+        <form class="auth-card" id="auth-form" autocomplete="off">
+            <div class="auth-brand" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                    <path d="m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9"></path>
+                    <path d="m18 15 4-4"></path>
+                    <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"></path>
+                </svg>
+            </div>
+            <h1 class="auth-title">ToolRegistry <span data-i18n="auth.console">Admin Console</span></h1>
+            <p class="auth-subtitle" data-i18n="auth.subtitle">Enter the admin token to open the panel.</p>
+            <div class="auth-field">
+                <input class="auth-input" id="auth-token" name="token" type="password"
+                       autocomplete="current-password" spellcheck="false" required
+                       placeholder="Admin token" data-i18n-placeholder="auth.tokenLabel"
+                       aria-label="Admin token" data-i18n-aria-label="auth.tokenLabel">
+                <button class="auth-reveal" id="auth-reveal" type="button" tabindex="-1"
+                        aria-pressed="false" title="Show token"
+                        data-i18n-title="auth.showToken"
+                        aria-label="Show token" data-i18n-aria-label="auth.showToken"></button>
+            </div>
+            <p class="auth-caps" id="auth-caps" hidden data-i18n="auth.capsLock">Caps Lock is on</p>
+            <p class="auth-error" id="auth-error" role="alert" aria-live="polite"></p>
+            <button class="auth-submit" id="auth-submit" type="submit" data-i18n="auth.submit">Sign in</button>
+            <div class="auth-foot">
+                <span class="auth-foot-note" data-i18n="auth.footNote">Local admin access</span>
+                <span class="auth-prefs">
+                    <button class="auth-pref-btn" id="auth-theme" type="button" onclick="toggleMode()"
+                            title="Toggle dark mode" data-i18n-title="theme.toggleMode"
+                            aria-label="Toggle dark mode" data-i18n-aria-label="theme.toggleMode">
+                        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round">
+                            <circle cx="12" cy="12" r="4"></circle>
+                            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+                        </svg>
+                        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path>
+                        </svg>
+                    </button>
+                    <!-- Filled by auth.js: a toggle for two languages, a menu for
+                         more than two. -->
+                    <span class="auth-lang-slot" id="auth-lang-slot"></span>
+                </span>
+            </div>
+        </form>
+    </div>
     <div class="app" id="app">
         <header class="header">
             <div class="header-content">
@@ -73,6 +121,15 @@
                         <option value="zh">中文</option>
                     </select>
                     <span class="header-sep" aria-hidden="true"></span>
+                    <button class="btn-refresh" id="signOut" onclick="signOut()"
+                            title="Sign out" data-i18n-title="auth.signOut" aria-label="Sign out"
+                            data-i18n-aria-label="auth.signOut">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                            <polyline points="16 17 21 12 16 7"></polyline>
+                            <line x1="21" y1="12" x2="9" y2="12"></line>
+                        </svg>
+                    </button>
                     <div class="status-indicator" id="status-indicator" title="Connected" data-i18n-title="status.connected">
                         <span class="status-dot" id="status-dot"></span>
                     </div>
@@ -535,6 +592,7 @@
 
     <script src="assets/js/core/state.js"></script>
     <script src="assets/js/core/i18n.js"></script>
+    <script src="assets/js/core/auth.js"></script>
     <script src="assets/js/core/api.js"></script>
     <script src="assets/js/core/ui.js"></script>
     <script src="assets/js/core/theme.js"></script>

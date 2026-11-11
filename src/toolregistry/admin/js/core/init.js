@@ -11,10 +11,15 @@ async function checkConnection() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initTheme();
     document.getElementById('langSwitcher').value = currentLang;
     applyI18n();
+    // Nothing of the panel is rendered until the server accepts a
+    // credential: ``authenticate`` either signs in or leaves the sign-in
+    // view up (body[data-auth] keeps the shell hidden either way).
+    const ready = await authenticate();
+    if (!ready) return;
     // Extensions load after the shell is usable: a slow or failing extension
     // must not delay the tools view.
     if (typeof AdminExtensions !== 'undefined') AdminExtensions.load();

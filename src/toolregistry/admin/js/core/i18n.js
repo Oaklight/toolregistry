@@ -88,7 +88,8 @@ const I18N = {
     'perm.handlerRegistered':'Handler Registered', 'perm.handlerNotSet':'Handler Not Set',
     'perm.fallback':'Fallback:',
     'perm.noRules':'No rules defined. All tool calls will use the fallback result.',
-    'misc.loading':'Loading...', 'misc.enterToken':'Enter admin token:',
+    'auth.console':'Admin Console', 'auth.subtitle':'Enter the admin token to open the panel.', 'auth.tokenLabel':'Admin token', 'auth.showToken':'Show token', 'auth.hideToken':'Hide token', 'auth.capsLock':'Caps Lock is on', 'auth.language':'Language', 'auth.footNote':'Local admin access', 'auth.submit':'Sign in', 'auth.empty':'Enter a token.', 'auth.invalid':'That token was rejected.', 'auth.locked':'Too many failed authentication attempts. Wait a moment, then try again.', 'auth.lockedWait':'Too many failed authentication attempts. Try again in {seconds} s.', 'auth.signOut':'Sign out',
+    'misc.loading':'Loading...',
     'misc.expandAll':'Expand all', 'misc.collapseAll':'Collapse all',
     'misc.toolCount':'{count} tool', 'misc.toolCountPlural':'{count} tools',
     'misc.clickToDisable':'Click to disable', 'misc.clickToEnable':'Click to enable',
@@ -332,7 +333,8 @@ const I18N = {
     'perm.handlerRegistered':'\u5904\u7406\u5668\u5df2\u6ce8\u518c', 'perm.handlerNotSet':'\u5904\u7406\u5668\u672a\u8bbe\u7f6e',
     'perm.fallback':'\u56de\u9000\u7b56\u7565\uff1a',
     'perm.noRules':'\u672a\u5b9a\u4e49\u89c4\u5219\u3002\u6240\u6709\u5de5\u5177\u8c03\u7528\u5c06\u4f7f\u7528\u56de\u9000\u7ed3\u679c\u3002',
-    'misc.loading':'\u52a0\u8f7d\u4e2d...', 'misc.enterToken':'\u8bf7\u8f93\u5165\u7ba1\u7406\u5458\u4ee4\u724c\uff1a',
+    'auth.console':'\u7ba1\u7406\u63a7\u5236\u53f0', 'auth.subtitle':'\u8bf7\u8f93\u5165\u7ba1\u7406\u5458\u4ee4\u724c\u4ee5\u6253\u5f00\u9762\u677f\u3002', 'auth.tokenLabel':'\u7ba1\u7406\u5458\u4ee4\u724c', 'auth.showToken':'\u663e\u793a\u4ee4\u724c', 'auth.hideToken':'\u9690\u85cf\u4ee4\u724c', 'auth.capsLock':'\u5927\u5199\u9501\u5b9a\u5df2\u5f00\u542f', 'auth.language':'\u8bed\u8a00', 'auth.footNote':'\u672c\u673a\u7ba1\u7406\u5458\u8bbf\u95ee', 'auth.submit':'\u767b\u5f55', 'auth.empty':'\u8bf7\u8f93\u5165\u4ee4\u724c\u3002', 'auth.invalid':'\u4ee4\u724c\u88ab\u62d2\u7edd\u3002', 'auth.locked':'\u8ba4\u8bc1\u5931\u8d25\u6b21\u6570\u8fc7\u591a\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002', 'auth.lockedWait':'\u8ba4\u8bc1\u5931\u8d25\u6b21\u6570\u8fc7\u591a\uff0c\u8bf7 {seconds} \u79d2\u540e\u518d\u8bd5\u3002', 'auth.signOut':'\u9000\u51fa\u767b\u5f55',
+    'misc.loading':'\u52a0\u8f7d\u4e2d...',
     'misc.expandAll':'\u5c55\u5f00\u5168\u90e8', 'misc.collapseAll':'\u6298\u53e0\u5168\u90e8',
     'misc.toolCount':'{count} \u4e2a\u5de5\u5177', 'misc.toolCountPlural':'{count} \u4e2a\u5de5\u5177',
     'misc.clickToDisable':'\u70b9\u51fb\u7981\u7528', 'misc.clickToEnable':'\u70b9\u51fb\u542f\u7528',
@@ -493,6 +495,13 @@ const I18N = {
 
 let currentLang = localStorage.getItem('toolregistry-lang') || 'en';
 
+// The languages the panel ships, in menu order, and how each one names itself.
+// The sign-in view renders a toggle while there are two and a menu once there
+// are more (see auth.js: _renderLangPref).
+const LANGS = Object.keys(I18N);
+const LANG_LABELS = { en: 'EN', zh: '\u4e2d\u6587' };
+if (!LANGS.includes(currentLang)) currentLang = 'en';
+
 function t(key, params) {
     let s = (I18N[currentLang] && I18N[currentLang][key]) || I18N.en[key] || key;
     if (params) {
@@ -508,6 +517,9 @@ function setLang(lang) {
     applyI18n();
     // Extension titles come from each manifest, not the shared map above.
     if (typeof AdminExtensions !== 'undefined') AdminExtensions.applyLanguage();
+    // The sign-in view may be up and carries its own language control; it
+    // is loaded later than this file, so it may not exist yet.
+    if (typeof syncAuthPrefs === 'function') syncAuthPrefs();
 }
 
 // Translate the data-i18n attributes under *root*.  A scoped call only
@@ -531,8 +543,11 @@ function applyI18n(root = document) {
         el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel));
     });
     // Re-render dynamic content for the active tab, only for a whole-document
-    // pass; a scoped caller owns its own subtree.
+    // pass; a scoped caller owns its own subtree.  Nothing may fetch data
+    // before the server accepted a credential, or a signed-out visitor would
+    // generate a burst of 401s behind the sign-in view.
     if (root !== document) return;
+    if (document.body.dataset.auth !== 'ok') return;
     const activeTab = document.querySelector('.console-item.active')?.dataset.tab;
     if (activeTab === 'tools') { refreshTools(); refreshStats(); }
     else if (activeTab === 'sources') { refreshSources(); }

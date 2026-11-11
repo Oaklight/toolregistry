@@ -1371,6 +1371,25 @@ def _update_config(request: Request) -> Response:
 # ============== Version Info ==============
 
 
+def _logout(request: Request) -> Response:
+    """End the browser session without revoking the operator credential.
+
+    The bearer token is the operator's credential, not a session, so this
+    only deletes the HttpOnly session cookie.  A client that keeps the token
+    in memory is still authenticated; the panel drops it on sign-out.
+    """
+    app = _app(request)
+    # Every authenticated response reissues the sliding cookie in
+    # ``_set_session_cookie``.  This request was authenticated too, so without
+    # this the reissue would land after the deletion and the browser would stay
+    # signed in -- exactly what the operator asked to end.
+    setattr(request.state, "set_session_cookie", False)
+    response = Response(status_code=204)
+    if app.session is not None:
+        response.delete_cookie(app.session.cookie_name, path="/")
+    return _add_cors(request, response)
+
+
 def _get_info(request: Request) -> Response:
     """Return version information for toolregistry and optional dependencies."""
     import toolregistry
@@ -2102,5 +2121,6 @@ def setup_routes(app: "AdminApp") -> None:
     app.get("/api/permissions")(_get_permissions)
     app.get("/api/config")(_get_config)
     app.put("/api/config")(_update_config)
+    app.post("/api/logout")(_logout)
     app.get("/api/info")(_get_info)
     app.get("/api/schema")(_get_schema)
