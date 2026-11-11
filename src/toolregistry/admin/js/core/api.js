@@ -1,16 +1,6 @@
 // ============== API Client ==============
-// Concurrent 401s share a single prompt so the browser does not stack
-// dialogs; a rejected token gets exactly one retry (see request()).
-let _authPromptPromise = null;
-function promptForAdminToken() {
-    if (!_authPromptPromise) {
-        _authPromptPromise = Promise.resolve(prompt(t('misc.enterToken')))
-            .then((value) => (value || '').trim())
-            .finally(() => { _authPromptPromise = null; });
-    }
-    return _authPromptPromise;
-}
-
+// A 401 opens the sign-in view (js/core/auth.js) once for every request that
+// arrives while it is up; a rejected token gets exactly one retry.
 class AdminAPI {
     constructor(baseUrl, token) {
         this.baseUrl = baseUrl;
@@ -30,7 +20,7 @@ class AdminAPI {
     }
 
     async request(path, options = {}, authRetried = false) {
-        const requestToken = this.token;
+        const tokenAtStart = this.token;
         const sentToken = !!this.token;
         // Build headers per attempt and let the current token win:
         // spreading the caller's headers last would re-send the token
@@ -42,16 +32,27 @@ class AdminAPI {
         };
         try {
             const response = await fetch(this.baseUrl + path, requestOptions);
+            if (response.status === 429) {
+                // The server refuses before comparing the credential, so
+                // retrying now cannot help.  Show the reason on the sign-in
+                // view instead of reporting it inside the panel.
+                const message = await this.errorMessage(response);
+                showAuthScreen(message);
+                throw new Error(message);
+            }
             if (response.status === 401) {
                 this.authRequired = true;
                 // A stored or freshly entered token that still gets 401
-                // is final: never loop the prompt forever on a typo.
-                if (authRetried) throw new Error(t('error.unauthorized'));
+                // is final: never loop the sign-in view forever on a typo.
+                if (authRetried) {
+                    showAuthScreen(t('auth.invalid'));
+                    throw new Error(t('error.unauthorized'));
+                }
                 // Another request may have obtained a token while this
-                // one was in flight; reuse it instead of prompting.
+                // one was in flight; reuse it instead of asking again.
                 let token = this.token;
-                if (!token || token === requestToken) {
-                    token = await promptForAdminToken();
+                if (!token || token === tokenAtStart) {
+                    token = await requestToken('');
                     if (!token) throw new Error(t('error.unauthorized'));
                     // Keep the bearer token in memory only.  The server
                     // issues an HttpOnly session cookie on the first

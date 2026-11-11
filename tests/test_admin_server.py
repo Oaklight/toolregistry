@@ -2452,3 +2452,53 @@ class TestAdminNonFiniteToolResult:
             "loss": None,
             "ratio": None,
         }
+
+
+class TestAdminSignInSurface:
+    """The panel signs in through a page, not a prompt (#281 A1, A2, A6)."""
+
+    def test_the_shell_carries_the_sign_in_view(self) -> None:
+        registry = ToolRegistry()
+        server = AdminServer(registry, port=18087, auth_token="secret123")
+        try:
+            info = server.start()
+            time.sleep(0.1)
+            with urllib.request.urlopen(f"{info.url}/", timeout=5) as response:
+                shell = response.read().decode("utf-8")
+        finally:
+            server.stop()
+
+        assert 'data-auth="pending"' in shell
+        assert 'id="auth-screen"' in shell
+        assert 'id="auth-token"' in shell
+        # The sign-in view carries its own preferences: a language control and
+        # a light/dark toggle work before a token was accepted (#281 A1, A6).
+        assert 'id="auth-reveal"' in shell
+        assert 'id="auth-caps"' in shell
+        assert 'id="auth-theme"' in shell
+        assert 'id="auth-lang-slot"' in shell
+        # The layout is present in the document but CSS hides it until the
+        # credential is accepted; the sign-out control is part of the shell.
+        assert 'id="signOut"' in shell
+
+    def test_logout_clears_the_session_cookie(self) -> None:
+        registry = ToolRegistry()
+        server = AdminServer(registry, port=18088, auth_token="secret123")
+        try:
+            info = server.start()
+            time.sleep(0.1)
+            request = urllib.request.Request(f"{info.url}/api/logout", method="POST")
+            request.add_header("Authorization", "Bearer secret123")
+            request.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                status = response.status
+                cookies = response.headers.get_all("Set-Cookie") or []
+        finally:
+            server.stop()
+
+        assert status == 204
+        # Exactly one Set-Cookie: the deletion.  The sliding-session reissue
+        # that every authenticated response performs must not run here, or the
+        # browser would receive a fresh cookie right after the deletion.
+        assert len(cookies) == 1, cookies
+        assert "Max-Age=0" in cookies[0] or "max-age=0" in cookies[0], cookies[0]

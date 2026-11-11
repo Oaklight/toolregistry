@@ -46,12 +46,16 @@ function toggleMode() {
 function syncThemeControls() {
     const select = document.getElementById('schemeSwitcher');
     if (select) select.value = currentScheme();
-    const toggle = document.getElementById('modeToggle');
-    if (toggle) {
-        const next = currentMode() === 'dark' ? 'light' : 'dark';
-        toggle.title = t(next === 'dark' ? 'theme.toDark' : 'theme.toLight');
-        toggle.setAttribute('aria-label', toggle.title);
-    }
+    const next = currentMode() === 'dark' ? 'light' : 'dark';
+    const label = t(next === 'dark' ? 'theme.toDark' : 'theme.toLight');
+    // The sign-in view carries its own theme button; the icon itself comes
+    // from the scheme selectors in CSS, so only the label needs painting.
+    ['modeToggle', 'auth-theme'].forEach((id) => {
+        const toggle = document.getElementById(id);
+        if (!toggle) return;
+        toggle.title = label;
+        toggle.setAttribute('aria-label', label);
+    });
 }
 
 // ---------- Console rail ----------
