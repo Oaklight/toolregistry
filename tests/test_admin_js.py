@@ -97,16 +97,19 @@ vm.runInContext(code, vm.createContext(globalThis));
     globalThis.__submitAuth({ preventDefault() {} });
   }, 20);
   let threw = null;
+  let threwStatus = null;
   try {
     await run;
   } catch (error) {
     threw = error.message;
+    threwStatus = error.status === undefined ? null : error.status;
   }
   console.log(JSON.stringify({
     calls,
     state: globalThis.document.body.dataset.auth,
     error: node('auth-error').textContent,
     threw,
+    threwStatus,
   }));
 })();
 """
@@ -134,6 +137,7 @@ def _combined_source() -> str:
                 "state": "ok",
                 "error": "",
                 "threw": None,
+                "threwStatus": None,
             },
         ),
         (
@@ -144,16 +148,19 @@ def _combined_source() -> str:
                 "state": "ok",
                 "error": "",
                 "threw": None,
+                "threwStatus": None,
             },
         ),
         (
             "wrong",
             {
                 "calls": ["Bearer stale", "Bearer wrong"],
-                # The panel stays on the sign-in view and says why.
+                # The panel stays on the sign-in view and says why, and the
+                # error carries the status an extension branches on.
                 "state": "login",
                 "error": "auth.invalid",
                 "threw": "error.unauthorized",
+                "threwStatus": 401,
             },
         ),
     ],
