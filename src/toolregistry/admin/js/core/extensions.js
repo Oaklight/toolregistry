@@ -118,6 +118,17 @@ const AdminExtensions = (() => {
         const nav = document.getElementById('console');
         if (!nav) return;
         const groupName = navGroup(manifest);
+        // A group the shell already names ("manage", "observe") exists in the
+        // rail.  Adding another heading with the same label reads as two
+        // sections that do not differ; append to the one that is there.
+        const builtin = groupName
+            ? Array.from(nav.querySelectorAll('.console-group'))
+                .find((node) => node.dataset.navGroup === groupName)
+            : null;
+        if (builtin) {
+            builtin.appendChild(navButton(manifest));
+            return;
+        }
         let section = Array.from(nav.querySelectorAll('.console-ext'))
             .find((node) => node.dataset.extGroup === groupName);
         if (!section) {

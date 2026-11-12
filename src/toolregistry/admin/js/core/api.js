@@ -38,7 +38,7 @@ class AdminAPI {
                 // view instead of reporting it inside the panel.
                 const message = await this.errorMessage(response);
                 showAuthScreen(message);
-                throw new Error(message);
+                throw this.httpError(message, response);
             }
             if (response.status === 401) {
                 this.authRequired = true;
@@ -46,7 +46,7 @@ class AdminAPI {
                 // is final: never loop the sign-in view forever on a typo.
                 if (authRetried) {
                     showAuthScreen(t('auth.invalid'));
-                    throw new Error(t('error.unauthorized'));
+                    throw this.httpError(t('error.unauthorized'), response);
                 }
                 // Another request may have obtained a token while this
                 // one was in flight; reuse it instead of asking again.
@@ -66,7 +66,7 @@ class AdminAPI {
             }
             if (response.ok && !sentToken) this.authRequired = false;
             if (!response.ok) {
-                throw new Error(await this.errorMessage(response));
+                throw this.httpError(await this.errorMessage(response), response);
             }
             return await response.json();
         } catch (error) {
@@ -76,6 +76,15 @@ class AdminAPI {
             }
             throw error;
         }
+    }
+
+    // The status travels with the error: an extension has to tell "this
+    // feature is not configured" (503) from a failed request, and the message
+    // text is not a contract it can branch on.
+    httpError(message, response) {
+        const error = new Error(message);
+        if (response) error.status = response.status;
+        return error;
     }
 
     async errorMessage(response) {
