@@ -34,6 +34,76 @@ Keep commit messages concise and focused on *why*, not *what*. One logical chang
 - Ensure `make lint` passes before submitting
 - Merge strategy: rebase
 
+Every PR uses `.github/pull_request_template.md`. The rules below decide how
+much review a PR needs and in what order PRs merge.
+
+### Review tiers
+
+Tick one risk tier in the template. When a PR spans tiers, it takes the
+highest.
+
+| Tier | Typical change | Review |
+| --- | --- | --- |
+| Pure move | Code moves with no logic edit | One reviewer checks only that the mechanical proof is credible. CI green plus the proof can merge. |
+| Boundary or contract change | Imports, public API, config schema, wire format | One reviewer plus the maintainer. |
+| Runtime-behaviour change | Logic that runs differently after the PR | One or two reviewers who read the logic. |
+| Security-relevant | Auth, permissions, credentials, outbound network policy, sanitizing | Always reviewed, ideally by someone other than the author's usual reviewer. |
+
+For a pure move, state the mechanical proof in the template: the summary of
+`python scripts/dev/check_move.py origin/master --markdown` (when
+`scripts/dev/check_move.py` exists) and a passing `ty` hook from
+`pre-commit run --all-files`.
+
+### Who reviews what
+
+Reviewer assignment follows the path, not the author's choice. The repository
+has no `CODEOWNERS` file, so ask the maintainer (`@Oaklight`) to assign the
+reviewer for the area. The areas follow
+the repository's `area:*` labels (`.github/labels.yml`):
+
+| Paths under `src/toolregistry/` | Area |
+| --- | --- |
+| `executor/` | `area:execution`: executor backends (inline, process, thread) |
+| `integrations/` | `area:integrations`: API standards (MCP, OpenAPI, LangChain, native) |
+| `llm/` | `area:llm`: LLM tool-calling, content blocks, rosetta shim |
+| `tool_registry.py`, `_mixins/`, `_names.py`, `events.py` | `area:registry`: tool registry, discovery, registration |
+| `tool.py`, `parameter_models.py`, `schema_diff.py` | `area:schema`: tool schema, parameter models, type system |
+| `admin/auth.py`, `netpolicy.py`, `_netpolicy.py`, `permissions/` | No `area:*` label. Security-relevant tier (token auth, outbound address policy, permission policy engine, as described in `AGENTS.md`). |
+| `admin/`, `config/`, `runtimes/`, `_http.py`, `_serialisation.py`, `_vendor/` | No `area:*` label. `_vendor/` is vendored and never edited in place (see `AGENTS.md`). |
+| `.github/`, `scripts/`, `Makefile`, `pyproject.toml`, `.pre-commit-config.yaml` | Build, CI, tooling |
+
+Any other path: ask the maintainer.
+
+### Series and overlap
+
+Before you open a PR, run the overlap check:
+
+```bash
+python scripts/dev/pr_overlap.py            # current branch against origin/master
+python scripts/dev/pr_overlap.py --local    # also other local branches
+python scripts/dev/pr_overlap.py --fail-on-overlap   # exit 1 on overlap
+```
+
+It lists every open PR that touches the same files. It needs the `gh` CLI and
+always exits 0 unless you pass `--fail-on-overlap`. When `gh` or git fails, it
+says the overlap is unverified and still exits 0.
+
+If a PR overlaps, merge a series one PR at a time and rebase the rest after
+each merge.
+
+### Small PRs
+
+- One refactor or one concern per PR.
+- Follow-on mechanical edits (formatting, doc touch-ups) go after the PR they
+  depend on. Do not open them as independent PRs.
+
+### Requesting review
+
+Request review only after CI is fully green. Do not skip a hook with `SKIP=...`
+to get there: the hooks pass on `master`, so a failure is a real diagnostic or
+a local environment that does not match CI. If you skipped any hook, name it
+and the reason in the template.
+
 ## AI-Assisted Contributions
 
 Using AI tools (e.g. Claude, Cursor, Copilot) to assist with development is welcome. However:
