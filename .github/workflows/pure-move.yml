@@ -5,12 +5,17 @@ name: Pure move
 # method and class-level assignment of the changed files by AST between the PR
 # base and the PR head, and fails on a def that is missing or moved with a
 # difference.  An accepted difference goes in `.github/pure-move-allow.txt`
-# (`qualified.name  reason`, one per line).
+# (`path::qualified.name  reason`, one per line), read from the BASE branch.
 #
 # The check is opt-in by label.  It is not tied to `refactor` titles because a
 # `refactor:` PR in this repository may change behaviour on purpose.  This is
 # a separate workflow, not a job in `ci.yml`, so that adding or removing the
 # label re-runs only this check and not the lint and test matrix.
+#
+# Python 3.10 is this repository's `requires-python` floor and the version the
+# main CI jobs use.  A job skipped by its `if:` reports as success to branch
+# protection, so the check can be listed as required without blocking PRs that
+# lack the label.
 
 on:
   pull_request:
@@ -43,8 +48,16 @@ jobs:
           BASE_REF: origin/${{ github.base_ref }}
         run: |
           args=()
-          if [ -f .github/pure-move-allow.txt ]; then
-            args+=(--allow .github/pure-move-allow.txt)
+          # Accepted differences are read from the BASE branch.  A PR that
+          # needs an exemption must land it first, in review; the head cannot
+          # grant itself one.
+          if git cat-file -e "$BASE_REF:.github/pure-move-allow.txt" 2>/dev/null; then
+            git show "$BASE_REF:.github/pure-move-allow.txt" > "$RUNNER_TEMP/pure-move-allow.txt"
+            args+=(--allow "$RUNNER_TEMP/pure-move-allow.txt")
+          fi
+          if [ -f .github/pure-move-allow.txt ] \
+            && ! git diff --quiet "$BASE_REF" HEAD -- .github/pure-move-allow.txt; then
+            echo "::warning file=.github/pure-move-allow.txt::This PR changes the allow-file; the base branch's copy is used, so the change has no effect on this run."
           fi
           python scripts/dev/check_move.py "$BASE_REF" HEAD "${args[@]}" --markdown \
             | tee -a "$GITHUB_STEP_SUMMARY"
