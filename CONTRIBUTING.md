@@ -63,16 +63,17 @@ the repository's `area:*` labels (`.github/labels.yml`):
 
 | Paths under `src/toolregistry/` | Area |
 | --- | --- |
-| `executor/` | `area:execution`: executor backends (inline, process, thread) |
+| `executor/` | `area:execution` or `area:executor`: executor backends (inline, process, thread). Both labels exist and are in use for this package; either is accepted until one is retired. |
 | `integrations/` | `area:integrations`: API standards (MCP, OpenAPI, LangChain, native) |
 | `llm/` | `area:llm`: LLM tool-calling, content blocks, rosetta shim |
 | `tool_registry.py`, `_mixins/`, `_names.py`, `events.py` | `area:registry`: tool registry, discovery, registration |
 | `tool.py`, `parameter_models.py`, `schema_diff.py` | `area:schema`: tool schema, parameter models, type system |
-| `admin/auth.py`, `netpolicy.py`, `_netpolicy.py`, `_http.py`, `permissions/`, `_mixins/permissions.py` | No `area:*` label. Security-relevant tier: admin token auth, the outbound address policy (`netpolicy.py` is public, `_netpolicy.py` implements it), the base-URL HTTP clients that dial outbound hosts (`_http.py`), and the permission policy engine. |
+| `admin/auth.py` (and the rest of `admin/`, next row), `netpolicy.py`, `_netpolicy.py`, `_http.py`, `permissions/`, `_mixins/permissions.py` | No `area:*` label. Security-relevant tier: admin token auth, the outbound address policy (`netpolicy.py` is public, `_netpolicy.py` implements it), the base-URL HTTP clients that dial outbound hosts (`_http.py`), and the permission policy engine. |
 | `_vendor/` | No `area:*` label. Vendored and never edited in place (see `AGENTS.md`). `_vendor/httpclient.py` does the transport work; review its callers (`_http.py`, `integrations/`) instead. |
 | `utils.py`, `_serialisation.py`, `_validation.py`, `errors.py`, `__init__.py` | No `area:*` label. Boundary or contract tier: `utils.py` is the compatibility surface that re-exports `ToolResultJSONEncoder` (implemented in `_serialisation.py`), `_validation.py` holds the shared metadata-field validation, `errors.py` the public error types, `__init__.py` the exports. |
 | `_warnings.py`, `_async_runtime.py`, `tool_wrapper.py` | No `area:*` label. Runtime-behaviour tier: warning attribution to the caller's frame, the persistent sync-to-async event loop, and the sync/async tool wrapper base classes. |
-| `admin/` (other than `auth.py`), `config/`, `runtimes/` | No `area:*` label. Ask the maintainer. |
+| `admin/` (the whole panel: `server.py`, `handlers.py`, `registration.py`, `source_hook.py`, `extensions.py`, `admin.html` and `js/`) | No `area:*` label. Security-relevant tier: the panel is the part of this repository that has needed security review most recently (frame protection for the shell, CORS restricted to same-origin, and the source-registration endpoints being reachable from a cross-site request). |
+| `config/`, `runtimes/` | No `area:*` label. Ask the maintainer. |
 | `.github/`, `scripts/`, `Makefile`, `pyproject.toml`, `.pre-commit-config.yaml` | Build, CI, tooling |
 
 Any other path: ask the maintainer.
