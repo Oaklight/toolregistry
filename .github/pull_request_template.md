@@ -17,6 +17,7 @@
 - [ ] `make test` passes. Result:
 - [ ] Pure move only: summary of `python scripts/dev/check_move.py origin/master --markdown`:
 - [ ] Overlap check done: `python scripts/dev/pr_overlap.py` shows no open PR on the same files, or the merge order is stated here:
+- [ ] Changelog: docs_en/docs_zh updated, or not user-facing
 - [ ] CI is fully green before review is requested
 
 ## AI disclosure

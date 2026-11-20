@@ -68,8 +68,11 @@ the repository's `area:*` labels (`.github/labels.yml`):
 | `llm/` | `area:llm`: LLM tool-calling, content blocks, rosetta shim |
 | `tool_registry.py`, `_mixins/`, `_names.py`, `events.py` | `area:registry`: tool registry, discovery, registration |
 | `tool.py`, `parameter_models.py`, `schema_diff.py` | `area:schema`: tool schema, parameter models, type system |
-| `admin/auth.py`, `netpolicy.py`, `_netpolicy.py`, `permissions/` | No `area:*` label. Security-relevant tier (token auth, outbound address policy, permission policy engine, as described in `AGENTS.md`). |
-| `admin/`, `config/`, `runtimes/`, `_http.py`, `_serialisation.py`, `_vendor/` | No `area:*` label. `_vendor/` is vendored and never edited in place (see `AGENTS.md`). |
+| `admin/auth.py`, `netpolicy.py`, `_netpolicy.py`, `_http.py`, `permissions/`, `_mixins/permissions.py` | No `area:*` label. Security-relevant tier: admin token auth, the outbound address policy (`netpolicy.py` is public, `_netpolicy.py` implements it), the base-URL HTTP clients that dial outbound hosts (`_http.py`), and the permission policy engine. |
+| `_vendor/` | No `area:*` label. Vendored and never edited in place (see `AGENTS.md`). `_vendor/httpclient.py` does the transport work; review its callers (`_http.py`, `integrations/`) instead. |
+| `utils.py`, `_serialisation.py`, `_validation.py`, `errors.py`, `__init__.py` | No `area:*` label. Boundary or contract tier: `utils.py` is the compatibility surface that re-exports `ToolResultJSONEncoder` (implemented in `_serialisation.py`), `_validation.py` holds the shared metadata-field validation, `errors.py` the public error types, `__init__.py` the exports. |
+| `_warnings.py`, `_async_runtime.py`, `tool_wrapper.py` | No `area:*` label. Runtime-behaviour tier: warning attribution to the caller's frame, the persistent sync-to-async event loop, and the sync/async tool wrapper base classes. |
+| `admin/` (other than `auth.py`), `config/`, `runtimes/` | No `area:*` label. Ask the maintainer. |
 | `.github/`, `scripts/`, `Makefile`, `pyproject.toml`, `.pre-commit-config.yaml` | Build, CI, tooling |
 
 Any other path: ask the maintainer.
@@ -81,12 +84,16 @@ Before you open a PR, run the overlap check:
 ```bash
 python scripts/dev/pr_overlap.py            # current branch against origin/master
 python scripts/dev/pr_overlap.py --local    # also other local branches
-python scripts/dev/pr_overlap.py --fail-on-overlap   # exit 1 on overlap
+python scripts/dev/pr_overlap.py --fail-on-overlap   # gate: 1 overlap, 2 unverified
 ```
 
-It lists every open PR that touches the same files. It needs the `gh` CLI and
-always exits 0 unless you pass `--fail-on-overlap`. When `gh` or git fails, it
-says the overlap is unverified and still exits 0.
+It lists every open PR that touches the same files, and leaves out the PR of
+the branch itself (matched by branch name, by head commit, or by
+`$GITHUB_HEAD_REF`), so `--head HEAD` or a SHA works in a detached checkout. It
+needs the `gh` CLI and exits 0 unless you pass `--fail-on-overlap`. That gate
+exits 1 on overlap and 2 when the check could not complete (`gh` missing or
+failing, bad output, or 200 open PRs so the list may be truncated); a gate does
+not pass on a check that did not finish.
 
 If a PR overlaps, merge a series one PR at a time and rebase the rest after
 each merge.
