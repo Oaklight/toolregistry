@@ -1,5 +1,5 @@
 {
-  "generated_by": "zerodep 2026.11.7.1",
+  "generated_by": "zerodep 2026.11.20",
   "lock_version": 1,
   "modules": {
     "frontmatter": {
@@ -76,15 +76,15 @@
     },
     "yaml": {
       "files": {
-        "yaml.py": "f333c755dd148c1cfbe47c4c18871a020567f75d64661f433585ba77365903ce"
+        "yaml.py": "5433d7b3580b112ade9e1777d18e40d2a27fa4258818c10cd64fb7803934d0e9"
       },
       "requested": true,
-      "upstream_hash": "5fd31be65d0c15cc82ef518e7b6e9cb553f8a7722a70c1ae6f9cda0999c92344",
-      "version": "0.3.1"
+      "upstream_hash": "0b5ac3e3980f027dbf90f8516a4c465f5b49d9250a0164f4b0696b586d9e7b78",
+      "version": "0.4.0"
     }
   },
   "source": {
-    "ref": "91549718f777c04ecfd3b9f6d74cc55be78a816b",
+    "ref": "c5c96b0b758d88cff31f92ed2ad1225412903538",
     "repo": "Oaklight/zerodep"
   }
 }
