@@ -30,6 +30,8 @@ print(registry.activate_skill("pdf-processing"))  # level 2
 print(registry.read_skill_resource("pdf-processing", "references/guide.md"))  # level 3
 ```
 
+`skills_catalog()` omits filesystem locations by default, because the catalog is prompt text. Pass `include_locations=True` to add a `~`-relative location; paths outside the home directory appear as a file name only.
+
 Discovery is lazy. Constructing a `ToolRegistry` does not touch the filesystem; the first skill API call creates the store.
 
 ## Loading skills
@@ -74,7 +76,7 @@ registry.discover_skills(
 )
 ```
 
-`reload_skills()` re-runs the last discovery from disk. Invalid skills are skipped during discovery and do not break the rest of the scan. Use `validate_skills()` to report failures explicitly.
+`reload_skills()` re-runs every source from disk, including sources added by `apply_skill_config()`, and each source keeps its own paths, recursion flag, filters, and override setting. Invalid skills are skipped during discovery and do not break the rest of the scan; `skill_discovery_errors()` returns the failed directories, and `validate_skills(include_failures=True)` includes them in the validation report.
 
 ## Selecting skills
 
