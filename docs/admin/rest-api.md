@@ -25,6 +25,15 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8081/api/tools
 | `POST` | `/api/tools/{name}/override` | 覆写描述、标题、标签与执行提示 |
 | `DELETE` | `/api/tools/{name}/override` | 恢复原始定义 |
 
+### Agent 技能
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| `GET` | `/api/skills` | 列出已发现技能、根目录与已暴露工具名 |
+| `GET` | `/api/skills/{name}` | 获取元数据、指令与资源 |
+| `POST` | `/api/skills/{name}/activate` | 返回激活提示词 |
+| `GET` | `/api/skills/{name}/resources/{path}` | 读取一个捆绑的文本资源 |
+
 ### 命名空间
 
 | 方法 | 端点 | 描述 |
