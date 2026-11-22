@@ -4,10 +4,10 @@
   "modules": {
     "frontmatter": {
       "files": {
-        "frontmatter.py": "32980a93281d76af54c6d0afee2af548fe011b020628627339ab20f3cc8956dd"
+        "frontmatter.py": "d7b3fe6ee55486fe17f63afe17a87453a61be3bb4c530c6d185c706c6eaddb92"
       },
       "requested": false,
-      "upstream_hash": "d3a003b6572f2719b650d430de98e1052b2696bb68e24a02144bac3d602d300f",
+      "upstream_hash": "9e7b261e344ab14a4561fb16a047bf63e215256e2cc817df8fa2cdced6ff3a4c",
       "version": "0.3.1"
     },
     "httpclient": {
@@ -44,11 +44,11 @@
     },
     "skills": {
       "files": {
-        "skills.py": "9bfbbe3e0a547733d214f7eedba259fddc12056fb562cc6b1abbc268cbbad400"
+        "skills.py": "692c2020902007b3ff62cf25dbd44aa42d3bdf5f8f9e6088e562100b4d184a4d"
       },
       "requested": true,
-      "upstream_hash": "07ffdd6d27ff643bba7fe7045833c08a5e858cedc150c38613d95f097a7ca274",
-      "version": "0.5.0"
+      "upstream_hash": "7b9387235f4225695c19f1924576e16cd2cd3b87a0fcea76a7b2279aa90e38bc",
+      "version": "0.5.1"
     },
     "sparse_search": {
       "files": {
@@ -84,7 +84,7 @@
     }
   },
   "source": {
-    "ref": "c5c96b0b758d88cff31f92ed2ad1225412903538",
+    "ref": "879100d489fd91657c3ee31c569ec39bb0034bd8",
     "repo": "Oaklight/zerodep"
   }
 }

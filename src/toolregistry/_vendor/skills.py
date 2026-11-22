@@ -1,5 +1,5 @@
 # /// zerodep
-# version = "0.5.0"
+# version = "0.5.1"
 # deps = ["frontmatter", "sparse_search"]
 # tier = "medium"
 # category = "protocol"
@@ -113,11 +113,16 @@ def _import_package_sibling(name: str):
     if not __package__:
         return None
     import importlib
+    import importlib.util
 
+    qualified = f"{__package__}.{name}"
     try:
-        return importlib.import_module(f"{__package__}.{name}")
-    except ImportError:
+        spec = importlib.util.find_spec(qualified)
+    except (ImportError, AttributeError, ValueError):
         return None
+    if spec is None:
+        return None
+    return importlib.import_module(qualified)
 
 
 def _load_frontmatter():
@@ -131,6 +136,12 @@ def _load_frontmatter():
     sibling = _import_package_sibling("frontmatter")
     if sibling is not None:
         return sibling.load, sibling.loads, sibling.dumps, sibling.Document
+
+    if __package__:
+        raise ImportError(
+            "Skills module requires the sibling frontmatter module. "
+            f"Copy frontmatter/frontmatter.py next to skills.py in {__package__!r}."
+        )
 
     _ensure_sibling_path("frontmatter")
     sys.modules.pop("frontmatter", None)
@@ -150,20 +161,21 @@ def _load_frontmatter():
 
 _HAS_SEARCH = False
 
-try:
-    _search = _import_package_sibling("sparse_search")
-    if _search is not None:
-        _SearchResult = _search.Result  # noqa: F841
-        _SparseIndex = _search.SparseIndex
-    else:
+_search = _import_package_sibling("sparse_search")
+if _search is not None:
+    _SearchResult = _search.Result  # noqa: F841
+    _SparseIndex = _search.SparseIndex
+    _HAS_SEARCH = True
+elif not __package__:
+    try:
         _ensure_sibling_path("sparse_search")
         sys.modules.pop("sparse_search", None)
         from sparse_search import Result as _SearchResult  # noqa: F401
         from sparse_search import SparseIndex as _SparseIndex
 
-    _HAS_SEARCH = True
-except ImportError:
-    pass
+        _HAS_SEARCH = True
+    except ImportError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -744,6 +756,11 @@ class SkillRegistry:
         * a directory whose immediate children (or full tree when
           *recursive* is true) are skill directories.
 
+        A directory that contains skill children is treated as a collection,
+        even when it also has its own ``SKILL.md``.  The children win so a
+        repository root that grows a top-level ``SKILL.md`` does not hide the
+        skills below it.
+
         Discovered skills are automatically registered.  Paths are scanned
         in the order given, so passing a lower-precedence root first and
         *override=True* lets later roots replace earlier skills with the same
@@ -772,17 +789,20 @@ class SkillRegistry:
                 if resolved.name.lower() != "skill.md":
                     continue
                 candidates: Iterable[Path] = (resolved.parent,)
-            elif _find_skill_md_quiet(resolved) is not None:
-                candidates = (resolved,)
             else:
                 try:
-                    candidates = (
-                        _walk_skill_dirs(resolved)
-                        if recursive
-                        else _iter_child_dirs(resolved)
-                    )
+                    if recursive:
+                        candidates = list(_walk_skill_dirs(resolved))
+                    else:
+                        candidates = [
+                            child
+                            for child in _iter_child_dirs(resolved)
+                            if _find_skill_md_quiet(child) is not None
+                        ]
                 except OSError:
                     continue
+                if not candidates and _find_skill_md_quiet(resolved) is not None:
+                    candidates = [resolved]
             for child in candidates:
                 try:
                     _find_skill_md(child)
@@ -1139,6 +1159,10 @@ def _walk_skill_dirs(root: Path) -> Iterator[Path]:
 def _find_skill_md(path: Path) -> Path:
     """Find ``SKILL.md`` in a directory.
 
+    The two canonical spellings are tried first.  A case-insensitive fallback
+    handles filesystems that preserve a non-standard spelling such as
+    ``SKILL.MD``.
+
     Args:
         path: Directory to search.
 
@@ -1148,10 +1172,9 @@ def _find_skill_md(path: Path) -> Path:
     Raises:
         ParseError: If no ``SKILL.md`` is found.
     """
-    for name in _SKILL_MD_NAMES:
-        candidate = path / name
-        if candidate.is_file():
-            return candidate
+    found = _find_skill_md_quiet(path)
+    if found is not None:
+        return found
     raise ParseError(f"SKILL.md not found in {path}")
 
 
@@ -1161,6 +1184,13 @@ def _find_skill_md_quiet(path: Path) -> Path | None:
         candidate = path / name
         if candidate.is_file():
             return candidate
+    try:
+        entries = sorted(path.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if entry.name.lower() == "skill.md" and entry.is_file():
+            return entry
     return None
 
 
