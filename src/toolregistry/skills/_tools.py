@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import html
 import re
+import unicodedata
 import warnings
 from collections.abc import Iterable
 from typing import Literal
@@ -50,23 +51,34 @@ _MAX_TOOL_NAME_LENGTH = 64
 _HASH_LENGTH = 8
 
 
-def _method_name_for_skill(name: str) -> str:
+def _sanitize_tool_name(value: str) -> str:
+    """Fold accents and replace characters outside the API-safe set."""
+    folded = unicodedata.normalize("NFKD", value)
+    folded = "".join(char for char in folded if unicodedata.category(char) != "Mn")
+    safe = _INVALID_TOOL_NAME_CHARS.sub("_", folded)
+    return re.sub(r"_+", "_", safe).strip("_")
+
+
+def _method_name_for_skill(name: str, *, fallback: str | None = None) -> str:
     """Return a function-call-safe method name for a skill.
 
     ``normalize_tool_name`` handles the usual separators and CamelCase, but a
     skill registered directly through the store can still carry characters
-    such as ``/``, ``:``, or non-ASCII text.  Replace anything else with an
-    underscore so the resulting tool name is accepted by provider APIs.
+    such as ``/``, ``:``, or non-ASCII text.  Accents are folded, anything
+    else is replaced with an underscore, and an unreadable name falls back to
+    the skill directory slug before the generic ``skill``.
 
     Args:
         name: Raw skill name.
+        fallback: Directory slug used when *name* has no usable characters.
 
     Returns:
         A name matching ``[A-Za-z0-9_-]+``.
     """
     method = normalize_tool_name(name)
-    safe = _INVALID_TOOL_NAME_CHARS.sub("_", method)
-    safe = re.sub(r"_+", "_", safe).strip("_")
+    safe = _sanitize_tool_name(method)
+    if not safe and fallback:
+        safe = _sanitize_tool_name(normalize_tool_name(fallback))
     if safe and not re.match(r"[A-Za-z_]", safe):
         safe = f"skill_{safe}"
     if not safe:
@@ -281,7 +293,8 @@ def build_per_skill_tools(
     budget = _method_budget(namespace)
     used: set[str] = set()
     for skill in skills:
-        base = _method_name_for_skill(skill.name)
+        fallback = skill.path.name if skill.path is not None else None
+        base = _method_name_for_skill(skill.name, fallback=fallback)
         prefix = "skill_" if (not namespace or base in CATALOG_TOOL_METHODS) else ""
         method = _unique_method(base, skill.name, used, budget, prefix=prefix)
         tools.append(_make_skill_tool(store, skill, method))
