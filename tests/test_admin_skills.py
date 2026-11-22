@@ -93,6 +93,7 @@ def test_list_skills(skills_server) -> None:
     assert {skill["name"] for skill in data["skills"]} == {"alpha", "beta"}
     assert "skills-list" in data["tools"]
     assert any(root["path"] for root in data["roots"])
+    assert data["errors"] == {}
     assert all("instructions" not in skill for skill in data["skills"])
 
 
@@ -145,6 +146,37 @@ def test_activate_skill(skills_server) -> None:
     assert data["inline_resources"] is True
     assert "<skill_content" in data["prompt"]
     assert "GUIDE_BODY" in data["prompt"]
+
+
+def test_activate_inline_symlink_escape_is_rejected(tmp_path: Path) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SECRETDATA", encoding="utf-8")
+    directory = _write_skill(tmp_path, "alpha")
+    (directory / "references").mkdir()
+    link = directory / "references" / "escape.md"
+    try:
+        link.symlink_to(secret)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+
+    registry = ToolRegistry()
+    registry.discover_skills(tmp_path)
+    registry.register_skill_tools()
+
+    server = AdminServer(registry, port=18098)
+    info = server.start()
+    time.sleep(0.1)
+    try:
+        status, data = _request(
+            f"{info.url}/api/skills/alpha/activate",
+            method="POST",
+            data={"inline_resources": True},
+        )
+    finally:
+        server.stop()
+
+    assert status == 400
+    assert "escapes" in data["message"]
 
 
 def test_skills_endpoints_return_404_for_unknown_skill(skills_server) -> None:

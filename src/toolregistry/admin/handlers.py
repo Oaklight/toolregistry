@@ -1944,6 +1944,7 @@ def _get_skills(request: Request) -> Response:
             "count": len(records),
             "roots": roots,
             "tools": registry.skill_tools,
+            "errors": registry.skill_discovery_errors(),
         }
     )
 
