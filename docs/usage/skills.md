@@ -30,6 +30,8 @@ print(registry.activate_skill("pdf-processing"))  # 第 2 层
 print(registry.read_skill_resource("pdf-processing", "references/guide.md"))  # 第 3 层
 ```
 
+`skills_catalog()` 默认不输出文件系统位置，因为目录会作为提示词发送。传入 `include_locations=True` 可添加 `~` 相对位置；主目录之外的路径只显示文件名。
+
 发现是惰性的。构造 `ToolRegistry` 不会访问文件系统；第一次调用技能 API 时才创建存储。
 
 ## 加载技能
@@ -74,7 +76,7 @@ registry.discover_skills(
 )
 ```
 
-`reload_skills()` 会从磁盘重新执行上一次发现。发现的无效技能会被跳过，不会中断其余扫描。使用 `validate_skills()` 明确报告问题。
+`reload_skills()` 会从磁盘重新执行每个来源，包括 `apply_skill_config()` 添加的来源；每个来源保留自己的路径、递归标志、过滤器与覆盖设置。发现的无效技能会被跳过，不会中断其余扫描；`skill_discovery_errors()` 返回失败的目录，`validate_skills(include_failures=True)` 会把它们并入验证报告。
 
 ## 选择技能
 
