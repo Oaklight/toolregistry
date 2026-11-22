@@ -12,6 +12,7 @@ Two usage modes are supported:
 
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 import warnings
@@ -41,6 +42,12 @@ _UNSCOPED_CATALOG_METHODS = ("list_skills", "get_skill", "read_skill_resource")
 
 #: Characters accepted by common function-calling APIs.
 _INVALID_TOOL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
+
+#: Maximum length of a tool name accepted by OpenAI-compatible APIs.
+_MAX_TOOL_NAME_LENGTH = 64
+
+#: Length of the stable hash suffix used to disambiguate names.
+_HASH_LENGTH = 8
 
 
 def _method_name_for_skill(name: str) -> str:
@@ -73,6 +80,62 @@ def _method_name_for_skill(name: str) -> str:
     return safe
 
 
+def _method_budget(namespace: str | None) -> int:
+    """Return the method-name length available under *namespace*."""
+    if not namespace:
+        return _MAX_TOOL_NAME_LENGTH
+    prefix = len(normalize_tool_name(namespace)) + 1
+    return max(_HASH_LENGTH + 1, _MAX_TOOL_NAME_LENGTH - prefix)
+
+
+def _stable_suffix(name: str) -> str:
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:_HASH_LENGTH]
+    return f"_{digest}"
+
+
+def _fit_method(method: str, suffix: str, budget: int) -> str:
+    """Truncate *method* so that it plus *suffix* fits within *budget*."""
+    if len(suffix) >= budget:
+        return suffix.lstrip("_")[:budget] or "skill"
+    head = method[: budget - len(suffix)].rstrip("_")
+    return f"{head}{suffix}" if head else suffix.lstrip("_")
+
+
+def _unique_method(
+    method: str,
+    raw_name: str,
+    used: set[str],
+    budget: int,
+    *,
+    prefix: str = "",
+) -> str:
+    """Return a unique, prefixed method name that fits within *budget*."""
+    budget = max(_HASH_LENGTH + 1, budget - len(prefix))
+    changed = False
+    if len(method) > budget:
+        method = _fit_method(method, _stable_suffix(raw_name), budget)
+        changed = True
+    candidate = f"{prefix}{method}"
+    if candidate in used:
+        suffix = _stable_suffix(raw_name)
+        method = _fit_method(method, suffix, budget)
+        counter = 2
+        while f"{prefix}{method}" in used:
+            method = _fit_method(method, f"{suffix}_{counter}", budget)
+            counter += 1
+        changed = True
+    candidate = f"{prefix}{method}"
+    if changed:
+        warnings.warn(
+            f"Skill {raw_name!r} was exposed as {candidate!r} to keep the tool "
+            f"name unique and at most {_MAX_TOOL_NAME_LENGTH} characters.",
+            UserWarning,
+            stacklevel=3,
+        )
+    used.add(candidate)
+    return candidate
+
+
 def build_catalog_tools(
     store: SkillStore,
     *,
@@ -95,10 +158,8 @@ def build_catalog_tools(
     def list_skills(query: str = "", limit: int = 20) -> str:
         """List available Agent Skills, optionally ranked by a query.
 
-        Returns an ``<available_skills>`` catalog.  Each entry has a name,
-        description, and (for directory-backed skills) the location of its
-        ``SKILL.md``.  Use ``get_skill`` to load one skill's full
-        instructions.
+        Returns an ``<available_skills>`` catalog.  Each entry has a name and
+        description.  Use ``get_skill`` to load one skill's full instructions.
 
         Args:
             query: Optional natural-language task description.  When given,
@@ -217,12 +278,12 @@ def build_per_skill_tools(
     if limit is not None:
         skills = skills[: max(0, limit)]
     tools: list[Tool] = []
+    budget = _method_budget(namespace)
+    used: set[str] = set()
     for skill in skills:
-        method = _method_name_for_skill(skill.name)
-        if not namespace:
-            method = f"skill_{method}"
-        elif method in CATALOG_TOOL_METHODS:
-            method = f"skill_{method}"
+        base = _method_name_for_skill(skill.name)
+        prefix = "skill_" if (not namespace or base in CATALOG_TOOL_METHODS) else ""
+        method = _unique_method(base, skill.name, used, budget, prefix=prefix)
         tools.append(_make_skill_tool(store, skill, method))
     return tools
 

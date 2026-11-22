@@ -195,6 +195,42 @@ class TestDiscovery:
         store.reload()
         assert store.get("alpha").description == "second"
 
+    def test_discovery_errors_are_reported(self, tmp_path: Path) -> None:
+        _write_skill(tmp_path, "good")
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        (bad / "SKILL.md").write_text(
+            "---\nname: bad\n---\nMissing description.\n", encoding="utf-8"
+        )
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        (broken / "SKILL.md").write_text("No frontmatter.\n", encoding="utf-8")
+
+        store = SkillStore()
+        with pytest.warns(UserWarning, match="failed to load"):
+            store.discover(tmp_path)
+
+        assert store.names() == ["good"]
+        errors = store.discovery_errors
+        assert any(path.endswith("bad") for path in errors)
+        assert any(path.endswith("broken") for path in errors)
+
+        report = store.validate(include_failures=True)
+        assert any(path.endswith("bad") for path in report)
+        assert any(path.endswith("broken") for path in report)
+
+    def test_reload_replays_every_source(self, tmp_path: Path) -> None:
+        _write_skill(tmp_path / "first", "alpha")
+        _write_skill(tmp_path / "second", "beta")
+
+        store = SkillStore()
+        store.discover(tmp_path / "first")
+        store.discover(tmp_path / "second", append=True)
+        assert store.names() == ["alpha", "beta"]
+
+        store.reload()
+        assert store.names() == ["alpha", "beta"]
+
     def test_name_alias_lookup(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha-skill")
         store = SkillStore()
@@ -220,7 +256,12 @@ class TestPrompts:
 
         catalog = store.catalog()
         assert catalog.index("<name>alpha</name>") < catalog.index("<name>zeta</name>")
-        assert "<location>" in catalog
+        assert "<location>" not in catalog
+        assert str(tmp_path) not in catalog
+
+        with_locations = store.catalog(include_locations=True)
+        assert "<location>" in with_locations
+        assert str(tmp_path) not in with_locations
 
     def test_activation_lists_resources(self, tmp_path: Path) -> None:
         _write_skill(
@@ -335,6 +376,9 @@ class TestResources:
         store.discover(tmp_path)
         with pytest.raises(SkillResourceError, match="escapes"):
             store.read_resource("alpha", "references/escape.md")
+        with pytest.raises(SkillResourceError, match="escapes"):
+            store.activate("alpha", inline_resources=True)
+        assert store.activate("alpha", inline_resources=False)
 
     def test_missing_resource(self, tmp_path: Path) -> None:
         _write_skill(tmp_path, "alpha")
@@ -508,7 +552,7 @@ class TestRegistrySkills:
         assert isinstance(result.result, str)
         assert "Odd instructions." in result.result
 
-    def test_sanitized_tool_name_collision_warns_and_keeps_first(self) -> None:
+    def test_sanitized_tool_name_collision_stays_distinct(self) -> None:
         registry = ToolRegistry()
         registry.add_skill(
             Skill(SkillProperties(name="a/b", description="Slash"), "Slash body.")
@@ -520,8 +564,38 @@ class TestRegistrySkills:
         with pytest.warns(UserWarning) as record:
             names = registry.register_skill_tools(mode="per-skill")
 
-        assert names == ["skills-a_b"]
-        assert any("collides" in str(item.message) for item in record)
+        assert len(names) == 2
+        assert len(set(names)) == 2
+        assert names[0] == "skills-a_b"
+        assert names[1].startswith("skills-a_b_")
+        assert any("unique" in str(item.message) for item in record)
+
+    def test_long_skill_name_is_capped_at_64(self) -> None:
+        registry = ToolRegistry()
+        registry.add_skill(
+            Skill(SkillProperties(name="a" * 64, description="Long"), "Body.")
+        )
+
+        with pytest.warns(UserWarning, match="64 characters"):
+            names = registry.register_skill_tools(mode="per-skill")
+
+        assert len(names) == 1
+        assert len(names[0]) == 64
+        assert names[0].startswith("skills-")
+
+    def test_non_ascii_names_stay_distinct(self) -> None:
+        registry = ToolRegistry()
+        for name in ("技能-一", "技能-二", "技能-三"):
+            registry.add_skill(
+                Skill(SkillProperties(name=name, description=name), name)
+            )
+
+        with pytest.warns(UserWarning):
+            names = registry.register_skill_tools(mode="per-skill")
+
+        assert len(names) == 3
+        assert len(set(names)) == 3
+        assert all(len(name) <= 64 for name in names)
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +714,9 @@ skills:
 
         assert {skill.name for skill in registry.list_skills()} == {"alpha", "beta"}
         assert set(registry.skill_tools) == {"skills-alpha", "skills-beta"}
+
+        registry.reload_skills()
+        assert {skill.name for skill in registry.list_skills()} == {"alpha", "beta"}
 
 
 def test_vendored_skills_module_is_package_importable() -> None:

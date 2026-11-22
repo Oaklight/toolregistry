@@ -14,23 +14,26 @@ from __future__ import annotations
 
 import builtins
 import fnmatch
+import html
 import os
+import warnings
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from .._vendor.skills import (
     BM25Selector,
     KeywordSelector,
+    ParseError,
     SelectionResult,
     Selector,
     Skill,
     SkillError,
     SkillRegistry,
+    ValidationError,
     compose as _compose_skills,
     filter_compatible,
-    to_catalog as _to_catalog,
     validate as _validate_path,
 )
 
@@ -106,6 +109,17 @@ class SkillResource:
     def to_dict(self) -> dict[str, Any]:
         """Serialize the resource description."""
         return {"path": self.path, "kind": self.kind, "size": self.size}
+
+
+@dataclass
+class _DiscoveryCall:
+    """One ``discover()`` call, retained so ``reload()`` can replay it."""
+
+    specs: tuple[tuple[Path, bool], ...]
+    override: bool
+    include: tuple[str, ...] | None
+    exclude: tuple[str, ...] | None
+    errors: dict[str, str] = field(default_factory=dict)
 
 
 def default_skill_roots(
@@ -203,10 +217,8 @@ class SkillStore:
             root if isinstance(root, SkillRoot) else SkillRoot(Path(root))
             for root in raw_roots
         ]
-        self._last_specs: tuple[tuple[Path, bool], ...] | None = None
-        self._last_override = True
-        self._last_include: tuple[str, ...] | None = None
-        self._last_exclude: tuple[str, ...] | None = None
+        self._last_calls: builtins.list[_DiscoveryCall] | None = None
+        self._last_errors: dict[str, str] = {}
 
     # -- registry surface ---------------------------------------------------
 
@@ -232,6 +244,17 @@ class SkillStore:
     def names(self) -> builtins.list[str]:
         """Return registered skill names in sorted order."""
         return sorted(skill.name for skill in self._registry)
+
+    @property
+    def discovery_errors(self) -> dict[str, str]:
+        """Skills that failed to load, keyed by directory path.
+
+        ``discover()`` skips a directory whose ``SKILL.md`` cannot be parsed
+        or validated.  This mapping keeps the reason so a typo does not make
+        a skill disappear silently.  It is refreshed by the next
+        :meth:`discover` or :meth:`reload`.
+        """
+        return dict(self._last_errors)
 
     def find(self, name: str) -> Skill | None:
         """Return a skill by name, accepting ``_``/``-`` and case variants."""
@@ -306,9 +329,10 @@ class SkillStore:
         self._registry.unregister(skill.name)
 
     def clear(self) -> None:
-        """Remove every registered skill."""
+        """Remove every registered skill and forget the discovery plan."""
         self._registry = SkillRegistry()
-        self._last_specs = None
+        self._last_calls = None
+        self._last_errors = {}
 
     # -- discovery ----------------------------------------------------------
 
@@ -319,6 +343,7 @@ class SkillStore:
         override: bool = True,
         include: str | Iterable[str] | None = None,
         exclude: str | Iterable[str] | None = None,
+        append: bool = False,
     ) -> builtins.list[Skill]:
         """Discover skills and register them.
 
@@ -332,14 +357,78 @@ class SkillStore:
                 name.  Pass ``False`` to keep the first definition.
             include: Only register names matching these glob patterns.
             exclude: Skip names matching these glob patterns.
+            append: Keep earlier calls in the reload plan instead of replacing
+                it.  :meth:`apply_skill_config` uses this so a multi-source
+                configuration reloads every source.
 
         Returns:
             Newly registered skills, in discovery order.
         """
-        specs = self._discovery_specs(paths, recursive)
+        specs = tuple(self._discovery_specs(paths, recursive))
+        raw, errors = self._collect(specs, override)
+        call = _DiscoveryCall(
+            specs=specs,
+            override=override,
+            include=_as_patterns(include),
+            exclude=_as_patterns(exclude),
+            errors=errors,
+        )
+        if append and self._last_calls:
+            self._last_calls.append(call)
+        else:
+            self._last_calls = [call]
+        self._last_errors = self._merged_errors()
+
+        registered = self._register_skills(
+            _filter_skills(raw, include=include, exclude=exclude),
+            override=override,
+        )
+        self._warn_discovery_errors()
+        return registered
+
+    def reload(self) -> builtins.list[Skill]:
+        """Re-run every retained discovery call from disk.
+
+        Skills added individually with :meth:`add` are not retained.  When no
+        discovery call has run yet, this discovers from the configured roots.
+        Each source keeps its own paths, ``recursive`` flag, filters, and
+        override setting.
+        """
+        calls = list(self._last_calls) if self._last_calls else []
+        if not calls:
+            self.clear()
+            return self.discover()
+        self._registry = SkillRegistry()
+        registered: builtins.list[Skill] = []
+        for call in calls:
+            raw, errors = self._collect(call.specs, call.override)
+            call.errors = errors
+            registered.extend(
+                self._register_skills(
+                    _filter_skills(raw, include=call.include, exclude=call.exclude),
+                    override=call.override,
+                )
+            )
+        self._last_calls = calls
+        self._last_errors = self._merged_errors()
+        self._warn_discovery_errors()
+        return registered
+
+    def _collect(
+        self,
+        specs: Iterable[tuple[Path, bool]],
+        override: bool,
+    ) -> tuple[builtins.list[Skill], dict[str, str]]:
+        """Load skills and record the directories that failed."""
         probe = SkillRegistry()
         raw: builtins.list[Skill] = []
+        errors: dict[str, str] = {}
         for path, recursive_flag in specs:
+            for candidate in _candidate_dirs(path, recursive_flag):
+                try:
+                    Skill.load(candidate)
+                except (ParseError, ValidationError, OSError) as exc:
+                    errors[str(candidate)] = str(exc)
             raw.extend(
                 probe.discover(
                     path,
@@ -347,38 +436,36 @@ class SkillStore:
                     override=override,
                 )
             )
-        selected = _filter_skills(raw, include=include, exclude=exclude)
+        return raw, errors
+
+    def _register_skills(
+        self,
+        skills: Iterable[Skill],
+        *,
+        override: bool,
+    ) -> builtins.list[Skill]:
         registered: builtins.list[Skill] = []
-        for skill in selected:
+        for skill in skills:
             if skill.name in self._registry and not override:
                 continue
             self._registry.register(skill, override=override)
             registered.append(skill)
-
-        self._last_specs = tuple(specs)
-        self._last_override = override
-        self._last_include = _as_patterns(include)
-        self._last_exclude = _as_patterns(exclude)
         return registered
 
-    def reload(self) -> builtins.list[Skill]:
-        """Re-run the last discovery call from disk.
+    def _merged_errors(self) -> dict[str, str]:
+        merged: dict[str, str] = {}
+        for call in self._last_calls or []:
+            merged.update(call.errors)
+        return merged
 
-        Skills added individually with :meth:`add` are not retained.  When no
-        discovery call has run yet, this discovers from the configured roots.
-        """
-        if self._last_specs is None:
-            self.clear()
-            return self.discover()
-        specs = self._last_specs
-        self.clear()
-        return self.discover(
-            *(path for path, _ in specs),
-            recursive=specs[0][1] if specs else None,
-            override=self._last_override,
-            include=self._last_include,
-            exclude=self._last_exclude,
-        )
+    def _warn_discovery_errors(self) -> None:
+        if self._last_errors:
+            warnings.warn(
+                f"{len(self._last_errors)} skill(s) failed to load; "
+                "call discovery_errors for details.",
+                UserWarning,
+                stacklevel=3,
+            )
 
     # -- selection ----------------------------------------------------------
 
@@ -429,19 +516,29 @@ class SkillStore:
 
     # -- prompt generation --------------------------------------------------
 
-    def catalog(self, names: Iterable[str] | None = None) -> str:
+    def catalog(
+        self,
+        names: Iterable[str] | None = None,
+        *,
+        include_locations: bool = False,
+    ) -> str:
         """Return the Level-1 ``<available_skills>`` catalog.
 
         Args:
             names: Optional names to include.  When omitted, every registered
                 skill is included.  The output is sorted by name for stable
                 prompt caching.
+            include_locations: Emit a ``<location>`` for each skill.  Disabled
+                by default because the value is prompt text: an absolute path
+                would disclose the user's home layout.  When enabled, a path
+                under the home directory is written as ``~/…``; other paths
+                keep only the file name.
         """
         if names is None:
             skills = sorted(self._registry, key=lambda skill: skill.name)
         else:
             skills = sorted((self.get(name) for name in names), key=lambda s: s.name)
-        return _to_catalog(skills)
+        return _format_catalog(skills, include_locations=include_locations)
 
     def activate(
         self,
@@ -455,11 +552,21 @@ class SkillStore:
         Args:
             name: Registered skill name.
             inline_resources: Include small resource files in the prompt.
+                Every top-level bundled file is validated first, so a symlink
+                that escapes the skill directory raises
+                :class:`SkillResourceError` instead of leaking content.
             max_inline_bytes: Maximum size of each inlined file.
+
+        Raises:
+            SkillResourceError: If an inlined resource escapes the skill
+                directory.
         """
         if max_inline_bytes <= 0:
             raise ValueError("max_inline_bytes must be positive")
-        return self.get(name).to_prompt(
+        skill = self.get(name)
+        if inline_resources:
+            _ensure_inline_resources_safe(skill)
+        return skill.to_prompt(
             inline_resources=inline_resources,
             max_inline_bytes=max_inline_bytes,
         )
@@ -471,7 +578,13 @@ class SkillStore:
     # -- resources ----------------------------------------------------------
 
     def resources(self, name: str) -> builtins.list[SkillResource]:
-        """List files under ``scripts/``, ``references/``, and ``assets/``."""
+        """List files under ``scripts/``, ``references/``, and ``assets/``.
+
+        The walk is recursive for inspection and admin display.  Files whose
+        resolved path escapes the skill directory are omitted, matching the
+        policy of :meth:`read_resource`.  The activation prompt only inlines
+        top-level files.
+        """
         skill = self.get(name)
         root = _skill_root(skill)
         found: builtins.list[SkillResource] = []
@@ -484,7 +597,8 @@ class SkillStore:
                     continue
                 try:
                     relative = path.relative_to(root).as_posix()
-                except ValueError:
+                    _safe_resource_path(root, relative)
+                except (ValueError, SkillResourceError):
                     continue
                 kind = cast(ResourceKind, _RESOURCE_DIRS[relative.split("/", 1)[0]])
                 found.append(
@@ -551,13 +665,19 @@ class SkillStore:
     # -- validation and reporting ------------------------------------------
 
     def validate(
-        self, target: str | Path | None = None
+        self,
+        target: str | Path | None = None,
+        *,
+        include_failures: bool = False,
     ) -> dict[str, builtins.list[str]]:
         """Return spec problems keyed by skill name or path.
 
         Args:
             target: A registered skill name or a filesystem path.  When
                 omitted, every registered skill with a directory is checked.
+            include_failures: When *target* is omitted, also report skills
+                that failed to load during the last discovery.  Those names
+                are unknown, so their directory path is the key.
         """
         if target is None:
             results: dict[str, builtins.list[str]] = {}
@@ -568,6 +688,9 @@ class SkillStore:
                     ]
                 else:
                     results[skill.name] = _validate_path(skill.path)
+            if include_failures:
+                for path, message in self._last_errors.items():
+                    results.setdefault(path, []).append(message)
             return results
 
         path = Path(target).expanduser()
@@ -692,6 +815,107 @@ def _skill_root(skill: Skill) -> Path:
             f"Skill {skill.name!r} was parsed from text and has no resources"
         )
     return skill.path.resolve()
+
+
+def _has_skill_md(path: Path) -> bool:
+    """Return whether *path* holds a ``SKILL.md`` in any accepted spelling."""
+    for name in ("SKILL.md", "skill.md"):
+        if (path / name).is_file():
+            return True
+    try:
+        return any(
+            entry.name.lower() == "skill.md" and entry.is_file()
+            for entry in path.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def _candidate_dirs(path: Path, recursive: bool) -> builtins.list[Path]:
+    """Return the skill directories ``discover()`` will try to load.
+
+    Mirrors the vendored precedence: a collection root's skill children win
+    over the root's own ``SKILL.md``.
+    """
+    try:
+        if not path.exists():
+            return []
+        if path.is_file():
+            return [path.parent] if path.name.lower() == "skill.md" else []
+        candidates = _walk_candidates(path, recursive)
+        if not candidates and _has_skill_md(path):
+            return [path]
+        return candidates
+    except OSError:
+        return []
+
+
+def _walk_candidates(path: Path, recursive: bool) -> builtins.list[Path]:
+    """List child skill directories, recursively or one level deep."""
+    if recursive:
+        return list(_walk_skill_dirs(path))
+    return [
+        child
+        for child in sorted(item for item in path.iterdir() if item.is_dir())
+        if _has_skill_md(child)
+    ]
+
+
+def _walk_skill_dirs(root: Path) -> Iterator[Path]:
+    """Yield directories below *root* that contain a ``SKILL.md``."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        current = Path(dirpath)
+        if current == root:
+            continue
+        if any(name.lower() == "skill.md" for name in filenames):
+            yield current
+            dirnames.clear()
+
+
+def _ensure_inline_resources_safe(skill: Skill) -> None:
+    """Refuse to inline a resource that resolves outside the skill directory."""
+    root = _skill_root(skill)
+    for path in (*skill.scripts, *skill.references, *skill.assets):
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise SkillResourceError(
+                f"Resource {path} escapes the skill directory"
+            ) from exc
+        _safe_resource_path(root, relative)
+
+
+def _format_catalog(
+    skills: Iterable[Skill],
+    *,
+    include_locations: bool,
+) -> str:
+    """Build the Level-1 catalog without leaking absolute paths by default."""
+    parts = ["<available_skills>"]
+    for skill in skills:
+        parts.append("<skill>")
+        parts.append(f"<name>{html.escape(skill.name)}</name>")
+        parts.append(f"<description>{html.escape(skill.description)}</description>")
+        if include_locations and skill.path is not None:
+            location = _display_location(skill.path)
+            parts.append(f"<location>{html.escape(location)}</location>")
+        parts.append("</skill>")
+    parts.append("</available_skills>")
+    return "\n".join(parts)
+
+
+def _display_location(path: Path) -> str:
+    """Return a ``~``-relative location, or only the file name outside home."""
+    candidate = path
+    for name in ("SKILL.md", "skill.md"):
+        if (path / name).is_file():
+            candidate = path / name
+            break
+    try:
+        return "~/" + candidate.resolve().relative_to(Path.home()).as_posix()
+    except (ValueError, OSError):
+        return candidate.name
 
 
 def _safe_resource_path(root: Path, relative: str) -> Path:

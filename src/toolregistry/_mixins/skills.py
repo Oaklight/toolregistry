@@ -71,6 +71,7 @@ class SkillsMixin:
         override: bool = True,
         include: str | Iterable[str] | None = None,
         exclude: str | Iterable[str] | None = None,
+        append: bool = False,
     ) -> list[Skill]:
         """Discover skills from explicit paths or the standard roots.
 
@@ -83,6 +84,9 @@ class SkillsMixin:
                 name.
             include: Only register names matching these glob patterns.
             exclude: Skip names matching these glob patterns.
+            append: Keep earlier calls in the reload plan instead of replacing
+                it.  :meth:`apply_skill_config` uses this so a multi-source
+                configuration reloads every source.
 
         Returns:
             Newly registered skills.
@@ -93,10 +97,11 @@ class SkillsMixin:
             override=override,
             include=include,
             exclude=exclude,
+            append=append,
         )
 
     def reload_skills(self) -> list[Skill]:
-        """Re-run the last skill discovery call from disk."""
+        """Re-run every retained skill discovery call from disk."""
         return self.skills.reload()
 
     def add_skill(
@@ -157,9 +162,14 @@ class SkillsMixin:
 
     # -- prompt and resource access ----------------------------------------
 
-    def skills_catalog(self, names: Iterable[str] | None = None) -> str:
+    def skills_catalog(
+        self,
+        names: Iterable[str] | None = None,
+        *,
+        include_locations: bool = False,
+    ) -> str:
         """Return the Level-1 ``<available_skills>`` catalog."""
-        return self.skills.catalog(names)
+        return self.skills.catalog(names, include_locations=include_locations)
 
     def activate_skill(
         self,
@@ -199,9 +209,18 @@ class SkillsMixin:
         """Return JSON-serializable skill records for the admin panel."""
         return self.skills.status()
 
-    def validate_skills(self, target: str | Path | None = None) -> dict[str, list[str]]:
+    def skill_discovery_errors(self) -> dict[str, str]:
+        """Return skills that failed to load, keyed by directory path."""
+        return self.skills.discovery_errors
+
+    def validate_skills(
+        self,
+        target: str | Path | None = None,
+        *,
+        include_failures: bool = False,
+    ) -> dict[str, list[str]]:
         """Return Agent Skills spec problems keyed by skill name or path."""
-        return self.skills.validate(target)
+        return self.skills.validate(target, include_failures=include_failures)
 
     # -- tool exposure ------------------------------------------------------
 
@@ -306,6 +325,7 @@ class SkillsMixin:
         base = Path(source_path).expanduser().resolve().parent if source_path else None
 
         discovered: list[Skill] = []
+        first_discovery = True
         first_tool_source = True
         for source in sources:
             if not source.enabled:
@@ -318,8 +338,10 @@ class SkillsMixin:
                     override=source.override,
                     include=source.include or None,
                     exclude=source.exclude or None,
+                    append=not first_discovery,
                 )
             )
+            first_discovery = False
             if register_tools and source.expose != "none":
                 self.register_skill_tools(
                     mode=source.expose,
