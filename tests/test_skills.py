@@ -597,6 +597,32 @@ class TestRegistrySkills:
         assert len(set(names)) == 3
         assert all(len(name) <= 64 for name in names)
 
+    def test_accented_name_is_transliterated(self) -> None:
+        registry = ToolRegistry()
+        registry.add_skill(
+            Skill(SkillProperties(name="ümlaut", description="Accent"), "Body.")
+        )
+
+        with pytest.warns(UserWarning):
+            names = registry.register_skill_tools(mode="per-skill")
+
+        assert names == ["skills-umlaut"]
+
+    def test_unreadable_name_uses_directory_slug(self, tmp_path: Path) -> None:
+        registry = ToolRegistry()
+        registry.add_skill(
+            Skill(
+                SkillProperties(name="技能", description="CJK name"),
+                "Body.",
+                path=tmp_path / "pdf-tools",
+            )
+        )
+
+        with pytest.warns(UserWarning):
+            names = registry.register_skill_tools(mode="per-skill")
+
+        assert names == ["skills-pdf_tools"]
+
 
 # ---------------------------------------------------------------------------
 # Declarative configuration
