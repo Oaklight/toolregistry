@@ -12,10 +12,14 @@ __all__ = [
     "PythonSource",
     "MCPSource",
     "OpenAPISource",
+    "SkillExpose",
+    "SkillSource",
     "ToolMetadataOverride",
     "ToolSource",
     "ToolConfig",
 ]
+
+SkillExpose = Literal["catalog", "per-skill", "both", "none"]
 
 
 class ConfigError(ValueError):
@@ -297,6 +301,85 @@ ToolSource = PythonSource | MCPSource | OpenAPISource
 
 
 @dataclass(frozen=True)
+class SkillSource:
+    """A declarative Agent Skills source.
+
+    Attributes:
+        paths: Skill directories, ``SKILL.md`` files, or roots containing
+            skill directories.  An empty tuple uses the standard roots.
+            Relative paths resolve against the config file's directory.
+        recursive: Walk nested directories under each root.
+        override: Let a later skill replace an earlier one with the same
+            name.  Sources are applied in declaration order.
+        include: Only keep names matching these glob patterns.
+        exclude: Drop names matching these glob patterns.  Mutually
+            exclusive with *include*.
+        enabled: When false, the source is skipped.
+        expose: How to expose the skills as tools: ``"catalog"`` for the
+            list/get/read set, ``"per-skill"`` for one activation tool per
+            skill, ``"both"``, or ``"none"``.
+        namespace: Namespace applied to the generated tools.  ``None``
+            keeps the unscoped method names.
+        limit: Per-skill mode only; maximum number of tools to create.
+    """
+
+    paths: tuple[str, ...] = ()
+    recursive: bool = True
+    override: bool = True
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    enabled: bool = True
+    expose: SkillExpose = "catalog"
+    namespace: str | None = "skills"
+    limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.include and self.exclude:
+            raise ConfigError(
+                "SkillSource accepts only one of 'include' or 'exclude', not both."
+            )
+        if self.expose not in ("catalog", "per-skill", "both", "none"):
+            raise ConfigError(
+                f"Invalid skill expose mode {self.expose!r}. "
+                "Expected 'catalog', 'per-skill', 'both', or 'none'."
+            )
+        if self.limit is not None and (
+            not isinstance(self.limit, int) or isinstance(self.limit, bool)
+        ):
+            raise ConfigError("SkillSource 'limit' must be a positive integer.")
+        if self.limit is not None and self.limit < 1:
+            raise ConfigError("SkillSource 'limit' must be a positive integer.")
+        if self.namespace is not None and not isinstance(self.namespace, str):
+            raise ConfigError("SkillSource 'namespace' must be a string or null.")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a config-file-compatible dict.
+
+        Omits fields with default values for cleaner output.
+        """
+        d: dict[str, Any] = {}
+        if self.paths:
+            d["paths"] = list(self.paths)
+        if not self.recursive:
+            d["recursive"] = False
+        if not self.override:
+            d["override"] = False
+        if self.include:
+            d["include"] = list(self.include)
+        if self.exclude:
+            d["exclude"] = list(self.exclude)
+        if not self.enabled:
+            d["enabled"] = False
+        if self.expose != "catalog":
+            d["expose"] = self.expose
+        if self.namespace != "skills":
+            d["namespace"] = self.namespace
+        if self.limit is not None:
+            d["limit"] = self.limit
+        return d
+
+
+@dataclass(frozen=True)
 class ToolMetadataOverride:
     """Per-tool metadata overrides declared in the config file.
 
@@ -366,6 +449,7 @@ class ToolConfig:
         disabled: Namespace patterns to disable (denylist mode).
         enabled: Namespace patterns to enable (allowlist mode).
         tools: Ordered sequence of tool source declarations.
+        skills: Ordered sequence of Agent Skills source declarations.
         source: Filesystem path of the config file (for diagnostics).
         tool_metadata: Per-tool metadata overrides keyed by exact tool name.
             Applied after registration; supports ``search_hint`` and ``defer``.
@@ -381,6 +465,7 @@ class ToolConfig:
     disabled: tuple[str, ...] = ()
     enabled: tuple[str, ...] = ()
     tools: tuple[ToolSource, ...] = ()
+    skills: tuple[SkillSource, ...] = ()
     source: str = ""
     profiles: dict[str, ProfileConfig] = field(default_factory=dict)
     tool_metadata: dict[str, ToolMetadataOverride] = field(default_factory=dict)
@@ -400,6 +485,8 @@ class ToolConfig:
             d["enabled"] = list(self.enabled)
         if self.tools:
             d["tools"] = [t.to_dict() for t in self.tools]
+        if self.skills:
+            d["skills"] = [s.to_dict() for s in self.skills]
         if self.profiles:
             d["profiles"] = {name: pc.to_dict() for name, pc in self.profiles.items()}
         if self.tool_metadata:

@@ -93,6 +93,10 @@
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6M12 16v6M2 12h6M16 12h6"></path><circle cx="12" cy="12" r="3"></circle></svg>
                         <span class="console-item-label" data-i18n="tab.sources">Sources</span>
                     </button>
+                    <button class="console-item" data-tab="skills" onclick="switchTab('skills')" title="Skills" data-i18n-title="tab.skills">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.4 5.6L20 9.6l-4 4.1.9 5.9L12 16.8 7.1 19.6 8 13.7 4 9.6l5.6-1z"></path></svg>
+                        <span class="console-item-label" data-i18n="tab.skills">Skills</span>
+                    </button>
                 </div>
 
                 <hr class="console-sep">
@@ -240,6 +244,40 @@
             <div class="loading"><div class="spinner"></div><span data-i18n="misc.loading">Loading...</span></div>
         </div>
     </div>
+    </div>
+</div>
+
+<!-- Skills Tab -->
+<div id="tab-skills" class="tab-content" style="display: none;">
+    <div class="card-stack">
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2 class="card-title" data-i18n="skills.title">Agent Skills</h2>
+                    <p class="card-desc" data-i18n="skills.desc">Skills discovered from the standard roots and explicit registrations.</p>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="refreshSkills()" data-i18n="btn.refresh">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="skills-summary" class="text-muted" style="font-size: var(--text-small); margin-bottom: 12px;"></div>
+                <div id="skills-body">
+                    <div class="loading"><div class="spinner"></div><span data-i18n="misc.loading">Loading...</span></div>
+                </div>
+            </div>
+        </div>
+        <div class="card" id="skill-detail-card" style="display: none;">
+            <div class="card-header">
+                <div>
+                    <h2 class="card-title" id="skill-detail-title"></h2>
+                    <p class="card-desc" id="skill-detail-meta"></p>
+                </div>
+                <div class="flex gap-2">
+                    <button class="btn btn-primary btn-sm" id="skill-activate-btn" onclick="activateActiveSkill()" data-i18n="skills.activate">Activate</button>
+                    <button class="btn btn-secondary btn-sm" onclick="closeSkillDetail()" data-i18n="btn.close">Close</button>
+                </div>
+            </div>
+            <div class="card-body" id="skill-detail-body"></div>
+        </div>
     </div>
 </div>
 
@@ -506,6 +544,7 @@
     <script src="assets/js/tabs/state.js"></script>
     <script src="assets/js/tabs/permissions.js"></script>
     <script src="assets/js/tabs/sources.js"></script>
+    <script src="assets/js/tabs/skills.js"></script>
     <script src="assets/js/tabs/schema.js"></script>
     <script src="assets/js/tabs/register.js"></script>
     <script src="assets/js/core/init.js"></script>

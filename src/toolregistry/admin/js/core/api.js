@@ -176,6 +176,29 @@ class AdminAPI {
         return this.request('/api/sources');
     }
 
+    async getSkills() {
+        return this.request('/api/skills');
+    }
+
+    async getSkill(name) {
+        return this.request('/api/skills/' + encodeURIComponent(name));
+    }
+
+    async activateSkill(name, options = {}) {
+        return this.request(
+            '/api/skills/' + encodeURIComponent(name) + '/activate',
+            { method: 'POST', body: JSON.stringify(options) }
+        );
+    }
+
+    async getSkillResource(name, path, maxBytes) {
+        const query = maxBytes ? '?max_bytes=' + encodeURIComponent(maxBytes) : '';
+        return this.request(
+            '/api/skills/' + encodeURIComponent(name)
+            + '/resources/' + encodeURIComponent(path) + query
+        );
+    }
+
     async previewSource(payload) {
         return this.request('/api/sources/preview', {
             method: 'POST',
