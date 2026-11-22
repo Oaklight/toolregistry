@@ -1921,6 +1921,130 @@ def _set_tool_discovery_mode(request: Request) -> Response:
     )
 
 
+def _skill_not_found(name: str) -> Response:
+    """Return the standard 404 for an unknown skill."""
+    return _error_response(404, "Not Found", f"Skill not found: {name}")
+
+
+def _get_skills(request: Request) -> Response:
+    """List discovered Agent Skills plus their configured roots."""
+    registry = _app(request).registry
+    records = registry.skill_status()
+    roots = [
+        {
+            "path": str(root.path),
+            "scope": root.scope,
+            "recursive": root.recursive,
+        }
+        for root in registry.skills.roots
+    ]
+    return _json_response(
+        {
+            "skills": records,
+            "count": len(records),
+            "roots": roots,
+            "tools": registry.skill_tools,
+        }
+    )
+
+
+def _get_skill(request: Request, name: str) -> Response:
+    """Return one skill's metadata, instructions, and resource list."""
+    registry = _app(request).registry
+    decoded = urllib.parse.unquote(name)
+    skill = registry.get_skill(decoded)
+    if skill is None:
+        return _skill_not_found(decoded)
+
+    record = next(
+        (item for item in registry.skill_status() if item["name"] == skill.name),
+        {},
+    )
+    data = skill.to_dict()
+    data["scope"] = record.get("scope", "custom")
+    data["resources"] = record.get("resources", [])
+    return _json_response({"skill": data})
+
+
+def _get_skill_resource(request: Request, name: str, resource: str) -> Response:
+    """Read one text resource bundled with a skill."""
+    registry = _app(request).registry
+    decoded_name = urllib.parse.unquote(name)
+    decoded_path = urllib.parse.unquote(resource)
+    raw_limit = (request.query_params.get("max_bytes") or ["65536"])[0]
+    try:
+        max_bytes = int(raw_limit)
+    except ValueError:
+        return _error_response(400, "Bad Request", "max_bytes must be an integer")
+
+    from ..skills import SkillError, SkillNotFoundError
+
+    try:
+        content = registry.read_skill_resource(
+            decoded_name,
+            decoded_path,
+            max_bytes=max_bytes,
+        )
+    except SkillNotFoundError as exc:
+        return _error_response(404, "Not Found", str(exc))
+    except (SkillError, ValueError) as exc:
+        return _error_response(400, "Bad Request", str(exc))
+    return _json_response(
+        {
+            "name": decoded_name,
+            "path": decoded_path,
+            "content": content,
+        }
+    )
+
+
+def _activate_skill(request: Request, name: str) -> Response:
+    """Return the activation prompt for one skill."""
+    registry = _app(request).registry
+    decoded = urllib.parse.unquote(name)
+    if registry.get_skill(decoded) is None:
+        return _skill_not_found(decoded)
+
+    if request.body:
+        try:
+            payload = request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            return _error_response(400, "Bad Request", f"Invalid JSON: {exc}")
+        if not isinstance(payload, dict):
+            return _error_response(400, "Bad Request", "Body must be a JSON object")
+    else:
+        payload = {}
+
+    inline = payload.get("inline_resources", False)
+    if not isinstance(inline, bool):
+        return _error_response(400, "Bad Request", "inline_resources must be a boolean")
+    raw_limit = payload.get("max_inline_bytes", 64 * 1024)
+    if not isinstance(raw_limit, int) or isinstance(raw_limit, bool) or raw_limit < 1:
+        return _error_response(
+            400, "Bad Request", "max_inline_bytes must be a positive integer"
+        )
+
+    from ..skills import SkillError
+
+    try:
+        prompt = registry.activate_skill(
+            decoded,
+            inline_resources=inline,
+            max_inline_bytes=raw_limit,
+        )
+    except SkillError as exc:
+        return _error_response(400, "Bad Request", str(exc))
+    skill = registry.get_skill(decoded)
+    assert skill is not None
+    return _json_response(
+        {
+            "name": skill.name,
+            "inline_resources": inline,
+            "prompt": prompt,
+        }
+    )
+
+
 def setup_routes(app: "AdminApp") -> None:
     """Register all middleware and routes on the app.
 
@@ -1963,6 +2087,10 @@ def setup_routes(app: "AdminApp") -> None:
     app.post("/api/namespaces/<path:name>/disable")(_disable_namespace)
     app.patch("/api/namespaces/<path:name>/metadata")(_update_namespace_metadata)
     app.get("/api/sources")(_get_sources)
+    app.get("/api/skills")(_get_skills)
+    app.post("/api/skills/<path:name>/activate")(_activate_skill)
+    app.get("/api/skills/<path:name>/resources/<path:resource>")(_get_skill_resource)
+    app.get("/api/skills/<path:name>")(_get_skill)
     app.get("/api/logs")(_get_logs)
     app.get("/api/logs/stats")(_get_log_stats)
     app.get("/api/metrics")(_get_metrics)

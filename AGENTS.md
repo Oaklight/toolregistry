@@ -22,11 +22,12 @@ Downstream packages are notified on release via `notify-downstream.yml`.
 ## Architecture
 
 ToolRegistry is organized around a central `ToolRegistry` class composed of
-7 orthogonal mixins:
+8 orthogonal mixins:
 
 | Mixin | File | Responsibility |
 |-------|------|----------------|
 | RegistrationMixin | `_mixins/registration.py` | Register/unregister tools from functions, classes, MCP, OpenAPI |
+| SkillsMixin | `_mixins/skills.py` | Discover, load, select, and expose Agent Skills |
 | EnableDisableMixin | `_mixins/enable_disable.py` | Enable/disable tools, track reasons, metadata updates |
 | NamespaceMixin | `_mixins/namespace.py` | Namespace prefixing, merge, spinoff sub-registries |
 | PermissionsMixin | `_mixins/permissions.py` | Tag-based permission policies, sync/async handlers |
@@ -39,13 +40,14 @@ Key standalone modules:
 | Module | Purpose |
 |--------|---------|
 | `tool.py` | `Tool`, `ToolMetadata`, `ToolTag`, `TOOLCALL_REASON_PROPERTY` |
-| `tool_registry.py` | `ToolRegistry` (composes the 7 mixins) |
+| `tool_registry.py` | `ToolRegistry` (composes the 8 mixins) |
 | `tool_wrapper.py` | Tool wrapper base classes |
 | `parameter_models.py` | JSON Schema generation from Python signatures |
 | `schema_diff.py` | Compatible/breaking classification of schema changes |
 | `events.py` | ChangeEvent types |
 | `errors.py` | Validation and schema error types |
 | `netpolicy.py` | Public outbound address policy (`_netpolicy.py` implements it) |
+| `skills/` | Agent Skills store, discovery, progressive disclosure, tool exposure |
 | `_names.py` | Tool-name normalization, namespace rules, registration filter |
 | `_http.py` | Base-URL HTTP clients and `HttpClientConfig` |
 | `_serialisation.py` | Tool-result JSON encoding |
@@ -66,7 +68,7 @@ Key standalone modules:
 src/toolregistry/
 ├── __init__.py              # Exports, __version__
 ├── tool.py                  # Tool, ToolMetadata, ToolTag
-├── tool_registry.py         # ToolRegistry (composes 7 mixins)
+├── tool_registry.py         # ToolRegistry (composes 8 mixins)
 ├── tool_wrapper.py          # Tool wrapper base classes
 ├── parameter_models.py      # JSON Schema from signatures
 ├── schema_diff.py           # Schema compatibility classification
@@ -81,7 +83,10 @@ src/toolregistry/
 ├── _async_runtime.py        # Sync→async bridge event loop
 ├── _warnings.py             # Caller-attributed warnings
 ├── _netpolicy.py            # Outbound address policy implementation
-├── _mixins/                 # 7 mixin classes (see Architecture)
+├── skills/                  # Agent Skills store and tool exposure
+│   ├── _store.py            # Discovery, prompts, selection, safe resources
+│   └── _tools.py            # Catalog and per-skill tool builders
+├── _mixins/                 # 8 mixin classes (see Architecture)
 ├── llm/                     # Discovery, truncation, tool calls, Rosetta bridge
 ├── runtimes/                # PTC (Programmatic Tool Calling) bridge
 ├── admin/                   # Web admin panel (server, handlers, extensions, UI)

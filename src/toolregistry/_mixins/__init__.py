@@ -5,3 +5,4 @@ from .logging import ExecutionLoggingMixin as ExecutionLoggingMixin
 from .namespace import NamespaceMixin as NamespaceMixin
 from .permissions import PermissionsMixin as PermissionsMixin
 from .registration import RegistrationMixin as RegistrationMixin
+from .skills import SkillsMixin as SkillsMixin

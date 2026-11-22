@@ -51,6 +51,7 @@ from ._mixins import (
     NamespaceMixin,
     PermissionsMixin,
     RegistrationMixin,
+    SkillsMixin,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,7 @@ class ToolRegistry(
     ExecutionLoggingMixin,
     PermissionsMixin,
     RegistrationMixin,
+    SkillsMixin,
     EnableDisableMixin,
     NamespaceMixin,
     ChangeCallbackMixin,

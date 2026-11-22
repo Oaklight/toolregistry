@@ -91,6 +91,8 @@ function switchTab(tabName) {
         refreshLogStats();
     } else if (tabName === 'sources') {
         refreshSources();
+    } else if (tabName === 'skills') {
+        refreshSkills();
     } else if (tabName === 'permissions') {
         refreshPermissions();
     } else if (tabName === 'settings') {

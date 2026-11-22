@@ -51,6 +51,17 @@ from .llm.discovery import (
 from .llm.tool_calls import ErrorResult, ResultList, ToolCallResult
 from .tool import Tool, ToolMetadata, ToolTag, copy_tool_metadata, tool_metadata
 from .tool_registry import ToolRegistry
+from .skills import (
+    Skill,
+    SkillError,
+    SkillNotFoundError,
+    SkillResource,
+    SkillResourceError,
+    SkillRoot,
+    SkillStore,
+    SkillToolMode,
+    default_skill_roots,
+)
 
 __all__ = [
     "ErrorDetail",
@@ -98,8 +109,17 @@ __all__ = [
     "SchemaChangeKind",
     "SchemaErrorDetail",
     "SchemaValidationError",
+    "Skill",
+    "SkillError",
+    "SkillNotFoundError",
+    "SkillResource",
+    "SkillResourceError",
+    "SkillRoot",
+    "SkillStore",
+    "SkillToolMode",
     "VALIDATION_ERRORS",
     "ValidationError",
+    "default_skill_roots",
 ]
 
 __version__ = "0.21.0"

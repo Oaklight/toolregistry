@@ -225,6 +225,25 @@ const I18N = {
     'modal.changeNameSep':'Change Name Separator',
     'confirm.nameSepChange':'Rename namespaced tools from "{from}" to "{to}"?',
     'confirm.nameSepWarn':'Existing tool names change immediately. Calls that still use the old names will fail, and log entries keep their old names.',
+    'tab.skills':'Skills',
+    'skills.title':'Agent Skills',
+    'skills.desc':'Skills discovered from the standard roots and explicit registrations.',
+    'skills.count':'{count} skill(s)',
+    'skills.tools':'Exposed tools: {tools}',
+    'skills.empty':'No skills discovered',
+    'skills.emptyHint':'Call registry.discover_skills() or add a skills: source to the config.',
+    'skills.resourceCount':'{count} resource(s)',
+    'skills.details':'Details',
+    'skills.activate':'Activate',
+    'skills.activated':'Skill "{name}" activated',
+    'skills.activateFailed':'Failed to activate skill: {error}',
+    'skills.detailFailed':'Failed to load skill: {error}',
+    'skills.instructions':'Instructions',
+    'skills.resources':'Resources',
+    'skills.noResources':'No bundled resources',
+    'skills.resourceRead':'Read',
+    'skills.resourceFailed':'Failed to read resource: {error}',
+    'skills.inlineResources':'Inline resource content',
   },
   zh: {
     'app.title':'ToolRegistry \u7ba1\u7406\u9762\u677f',
@@ -450,6 +469,25 @@ const I18N = {
     'modal.changeNameSep':'\u66f4\u6539\u540d\u79f0\u5206\u9694\u7b26',
     'confirm.nameSepChange':'\u5c06\u6240\u6709\u547d\u540d\u7a7a\u95f4\u5de5\u5177\u7684\u540d\u79f0\u5206\u9694\u7b26\u4ece "{from}" \u6539\u4e3a "{to}"\uff1f',
     'confirm.nameSepWarn':'\u73b0\u6709\u5de5\u5177\u540d\u4f1a\u7acb\u5373\u6539\u53d8\uff1b\u4ecd\u4f7f\u7528\u65e7\u540d\u79f0\u7684\u8c03\u7528\u5c06\u5931\u8d25\uff0c\u65e5\u5fd7\u4fdd\u7559\u65e7\u540d\u79f0\u3002',
+    'tab.skills':'\u6280\u80fd',
+    'skills.title':'Agent \u6280\u80fd',
+    'skills.desc':'\u4ece\u6807\u51c6\u76ee\u5f55\u548c\u663e\u5f0f\u6ce8\u518c\u4e2d\u53d1\u73b0\u7684 Agent Skills\u3002',
+    'skills.count':'{count} \u4e2a\u6280\u80fd',
+    'skills.tools':'\u5df2\u66b4\u9732\u5de5\u5177\uff1a{tools}',
+    'skills.empty':'\u672a\u53d1\u73b0\u6280\u80fd',
+    'skills.emptyHint':'\u8c03\u7528 registry.discover_skills() \u6216\u5728\u914d\u7f6e\u4e2d\u6dfb\u52a0 skills: \u6765\u6e90\u3002',
+    'skills.resourceCount':'{count} \u4e2a\u8d44\u6e90',
+    'skills.details':'\u8be6\u60c5',
+    'skills.activate':'\u6fc0\u6d3b',
+    'skills.activated':'\u6280\u80fd "{name}" \u5df2\u6fc0\u6d3b',
+    'skills.activateFailed':'\u6fc0\u6d3b\u6280\u80fd\u5931\u8d25\uff1a{error}',
+    'skills.detailFailed':'\u52a0\u8f7d\u6280\u80fd\u5931\u8d25\uff1a{error}',
+    'skills.instructions':'\u6307\u4ee4',
+    'skills.resources':'\u8d44\u6e90',
+    'skills.noResources':'\u65e0\u6346\u7ed1\u8d44\u6e90',
+    'skills.resourceRead':'\u8bfb\u53d6',
+    'skills.resourceFailed':'\u8bfb\u53d6\u8d44\u6e90\u5931\u8d25\uff1a{error}',
+    'skills.inlineResources':'\u5185\u8054\u8d44\u6e90\u5185\u5bb9',
   },
 };
 
@@ -498,6 +536,7 @@ function applyI18n(root = document) {
     const activeTab = document.querySelector('.console-item.active')?.dataset.tab;
     if (activeTab === 'tools') { refreshTools(); refreshStats(); }
     else if (activeTab === 'sources') { refreshSources(); }
+    else if (activeTab === 'skills') { refreshSkills(); }
     else if (activeTab === 'logs') { refreshLogs(); refreshLogStats(); }
     else if (activeTab === 'permissions') { refreshPermissions(); }
     else if (activeTab === 'schema') { switchSchemaSubTab(_activeSchemaSubTab); }

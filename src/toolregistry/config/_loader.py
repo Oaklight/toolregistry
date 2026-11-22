@@ -19,6 +19,7 @@ from ._types import (
     OpenAPISource,
     ProfileConfig,
     PythonSource,
+    SkillSource,
     ToolConfig,
     ToolMetadataOverride,
     ToolSource,
@@ -177,6 +178,8 @@ def _build_config(data: dict[str, Any], source: str) -> ToolConfig:
             )
         tools.append(_build_tool_source(cast(dict[str, Any], entry), i))
 
+    skills = _build_skill_sources(data)
+
     raw_profiles = data.get("profiles", {})
     if not isinstance(raw_profiles, dict):
         raise ConfigError(
@@ -197,10 +200,131 @@ def _build_config(data: dict[str, Any], source: str) -> ToolConfig:
         disabled=tuple(disabled),
         enabled=tuple(enabled_list),
         tools=tuple(tools),
+        skills=skills,
         source=source,
         profiles=profiles,
         tool_metadata=tool_metadata,
     )
+
+
+def _build_skill_sources(data: dict[str, Any]) -> tuple[SkillSource, ...]:
+    """Parse the top-level ``skills`` list.
+
+    A single mapping is accepted as a one-item list, so both::
+
+        skills:
+          paths: [.agents/skills]
+
+        skills:
+          - paths: [.agents/skills]
+
+    are valid.
+    """
+    raw = data.get("skills", [])
+    if raw is None:
+        return ()
+    if isinstance(raw, dict):
+        entries: list[Any] = [raw]
+    elif isinstance(raw, list):
+        entries = raw
+    else:
+        raise ConfigError(
+            f"'skills' must be a list or a mapping, got {type(raw).__name__}."
+        )
+
+    sources: list[SkillSource] = []
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                f"Skill entry at index {i} must be a mapping, "
+                f"got {type(entry).__name__}."
+            )
+        sources.append(_build_skill_source(cast(dict[str, Any], entry), i))
+    return tuple(sources)
+
+
+_SKILL_SOURCE_KEYS: frozenset[str] = frozenset(
+    {
+        "path",
+        "paths",
+        "recursive",
+        "override",
+        "include",
+        "exclude",
+        "enabled",
+        "expose",
+        "namespace",
+        "limit",
+    }
+)
+
+
+def _build_skill_source(entry: dict[str, Any], index: int) -> SkillSource:
+    unknown = set(entry) - _SKILL_SOURCE_KEYS
+    if unknown:
+        raise ConfigError(
+            f"Skill entry at index {index} has unknown key(s): "
+            f"{', '.join(sorted(unknown))}."
+        )
+
+    path = entry.get("path")
+    paths = entry.get("paths")
+    if path is not None and paths is not None:
+        raise ConfigError(
+            f"Skill entry at index {index} accepts only one of 'path' or 'paths'."
+        )
+    if path is not None:
+        path_values = _string_or_error(path, f"skills[{index}].path")
+        paths_value: tuple[str, ...] = (path_values,)
+    elif paths is None:
+        paths_value = ()
+    elif isinstance(paths, str):
+        paths_value = (paths,)
+    elif isinstance(paths, list) and all(isinstance(item, str) for item in paths):
+        paths_value = tuple(paths)
+    else:
+        raise ConfigError(
+            f"Skill entry at index {index}: 'paths' must be a string or a list "
+            "of strings."
+        )
+
+    return SkillSource(
+        paths=paths_value,
+        recursive=_bool_or_error(
+            entry.get("recursive", True), f"skills[{index}].recursive"
+        ),
+        override=_bool_or_error(
+            entry.get("override", True), f"skills[{index}].override"
+        ),
+        include=_pattern_tuple(entry.get("include"), f"skills[{index}].include"),
+        exclude=_pattern_tuple(entry.get("exclude"), f"skills[{index}].exclude"),
+        enabled=_bool_or_error(entry.get("enabled", True), f"skills[{index}].enabled"),
+        expose=entry.get("expose", "catalog"),
+        namespace=entry.get("namespace", "skills"),
+        limit=entry.get("limit"),
+    )
+
+
+def _string_or_error(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(f"{label} must be a string, got {type(value).__name__}.")
+    return value
+
+
+def _bool_or_error(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{label} must be a boolean, got {type(value).__name__}.")
+    return value
+
+
+def _pattern_tuple(value: Any, label: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    raise ConfigError(f"{label} must be a string or a list of strings.")
 
 
 def _validate_string_list(data: dict[str, Any], key: str) -> list[str]:
