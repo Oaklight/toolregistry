@@ -311,6 +311,26 @@ def log_all(tool_name: str, tool, registry) -> None:
 registry.add_post_register_hook(log_all)
 ```
 
+## Agent Skills
+
+`SkillsMixin` adds skill loading to the same registry. The store is created on first use, so a registry that never calls a skill method does not touch the filesystem.
+
+```python
+registry.discover_skills()                    # standard roots, or explicit paths
+registry.discover_skills("/opt/skills", recursive=True, exclude=["*-draft"])
+registry.list_skills()                        # sorted Skill objects
+registry.select_skills("summarize a PDF", top_k=3, available_tools=registry.list_tools())
+registry.skills_catalog()                     # level 1 prompt
+registry.activate_skill("pdf-processing")     # level 2 prompt
+registry.read_skill_resource("pdf-processing", "references/guide.md")  # level 3
+registry.reload_skills()
+registry.validate_skills()
+```
+
+Expose skills as tools with `register_skill_tools()`. Modes are `"catalog"` (default), `"per-skill"`, and `"both"`; see [Agent Skills](../../usage/skills.md) for the generated names and the config shape.
+
+`apply_skill_config()` consumes a `ToolConfig` or an iterable of `SkillSource` objects, resolves relative paths against the config file, and registers the declared tool sets.
+
 ## Integration Points
 
 The ToolRegistry provides integration points for:

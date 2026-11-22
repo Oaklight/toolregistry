@@ -68,6 +68,11 @@ tools:
     transport: http
     url: http://localhost:8080/mcp
     namespace: remote_mcp2
+
+skills:
+  - paths: [skills]
+    expose: catalog
+    namespace: skills
 ```
 
 ### JSONC Example
@@ -180,6 +185,37 @@ Environment variable interpolation (e.g. `"${VAR}"`) is supported in `kwargs` va
 | `header_name` | string | `"Authorization"` | Custom header name (for `type: "header"`) |
 
 If both `token_env` and `token` are specified, `token_env` takes precedence.
+
+### `skills` — Agent Skill Roots
+
+The top-level `skills` block is separate from `tools` because skills are prompt-level packages, not callable endpoints. A single mapping is accepted as a one-item list.
+
+```yaml
+skills:
+  - paths: [skills, ../shared-skills]
+    recursive: true
+    override: true
+    exclude: ["*-draft"]
+    expose: catalog
+    namespace: skills
+  - path: vendor/skills
+    expose: per-skill
+    limit: 20
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` / `paths` | string or list | standard roots | Roots, skill directories, or `SKILL.md` files; relative paths resolve against the config file |
+| `recursive` | bool | `true` | Walk nested directories |
+| `override` | bool | `true` | Let a later source replace an earlier skill with the same name |
+| `include` | string or list | — | Name globs to keep; mutually exclusive with `exclude` |
+| `exclude` | string or list | — | Name globs to drop |
+| `enabled` | bool | `true` | Skip the source when false |
+| `expose` | string | `"catalog"` | `"catalog"`, `"per-skill"`, `"both"`, or `"none"` |
+| `namespace` | string or null | `"skills"` | Namespace for generated tools |
+| `limit` | int | — | Per-skill mode: maximum number of tools |
+
+`load_config()` parses and validates this block but does not apply it. Pass the result to `ToolRegistry.apply_skill_config()` after constructing the registry. See [Agent Skills](skills.md) for the generated tool names and usage modes.
 
 ## Filtering Modes
 
@@ -307,6 +343,7 @@ class ToolConfig:
     disabled: tuple[str, ...]
     enabled: tuple[str, ...]
     tools: tuple[ToolSource, ...]  # PythonSource | MCPSource | OpenAPISource
+    skills: tuple[SkillSource, ...]  # parsed from the top-level skills block
     source: str  # config file path
 ```
 

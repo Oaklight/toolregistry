@@ -10,6 +10,7 @@ The core classes provide the fundamental abstractions for tool management, execu
 | [Tool](core/tool.md) | Represents an individual tool with metadata, parameters, and execution logic | Tool abstraction |
 | [Executor](core/executor.md) | Pluggable execution backends (thread/process) with cancellation and timeout | Execution engine |
 | [Outbound Address Policy](core/netpolicy.md) | Refuses a URL whose host is not globally reachable before a connection opens | SSRF defense |
+| [Agent Skills](../usage/skills.md) | Loads `SKILL.md` packages, ranks them, and exposes them as tools | Progressive disclosure |
 | [Events](events.md) | Change event types and callback mechanism for registry state changes | Event infrastructure |
 | [Permissions](permissions.md) | Rule-based authorization framework for controlling tool execution | Permission system |
 

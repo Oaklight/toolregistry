@@ -140,6 +140,7 @@ nav:
           - Permissions: usage/permissions.md
           - Message Building: usage/message_building.md
           - Declarative Configuration: usage/configuration.md
+          - Agent Skills: usage/skills.md
   - Examples:
       - Overview: examples/index.md
       - Consecutive Tool Calls: examples/consecutive_tool_calls.md
