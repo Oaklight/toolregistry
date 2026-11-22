@@ -13,6 +13,8 @@ Two usage modes are supported:
 from __future__ import annotations
 
 import html
+import re
+import warnings
 from collections.abc import Iterable
 from typing import Literal
 
@@ -36,6 +38,39 @@ CATALOG_TOOL_METHODS = ("list", "get", "read_resource")
 
 #: Method names used when the catalog tool set has no namespace.
 _UNSCOPED_CATALOG_METHODS = ("list_skills", "get_skill", "read_skill_resource")
+
+#: Characters accepted by common function-calling APIs.
+_INVALID_TOOL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _method_name_for_skill(name: str) -> str:
+    """Return a function-call-safe method name for a skill.
+
+    ``normalize_tool_name`` handles the usual separators and CamelCase, but a
+    skill registered directly through the store can still carry characters
+    such as ``/``, ``:``, or non-ASCII text.  Replace anything else with an
+    underscore so the resulting tool name is accepted by provider APIs.
+
+    Args:
+        name: Raw skill name.
+
+    Returns:
+        A name matching ``[A-Za-z0-9_-]+``.
+    """
+    method = normalize_tool_name(name)
+    safe = _INVALID_TOOL_NAME_CHARS.sub("_", method)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    if safe and not re.match(r"[A-Za-z_]", safe):
+        safe = f"skill_{safe}"
+    if not safe:
+        safe = "skill"
+    if safe != method:
+        warnings.warn(
+            f"Skill name {name!r} is not a valid tool name; using {safe!r}.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return safe
 
 
 def build_catalog_tools(
@@ -183,7 +218,7 @@ def build_per_skill_tools(
         skills = skills[: max(0, limit)]
     tools: list[Tool] = []
     for skill in skills:
-        method = normalize_tool_name(skill.name)
+        method = _method_name_for_skill(skill.name)
         if not namespace:
             method = f"skill_{method}"
         elif method in CATALOG_TOOL_METHODS:
