@@ -125,7 +125,7 @@ function completeAuth() {
     _setAuthBusy(false);
 }
 
-function requestToken(message) {
+function promptForAdminToken(message) {
     if (_pendingToken) {
         // Several requests hit 401 at once; they all wait on the same view.
         _setAuthError(message || '');
@@ -170,7 +170,7 @@ async function authenticate() {
                 cache: 'no-store',
             });
         } catch (error) {
-            token = await requestToken(t('error.connectionFailed'));
+            token = await promptForAdminToken(t('error.connectionFailed'));
             continue;
         }
         if (response.ok) {
@@ -184,16 +184,16 @@ async function authenticate() {
         if (response.status === 429) {
             // Refused before the credential is compared, so a retry succeeds
             // only after the window passes; say how long that is.
-            token = await requestToken(await lockoutMessage(response));
+            token = await promptForAdminToken(await lockoutMessage(response));
             continue;
         }
         if (response.status === 401) {
-            token = await requestToken(message);
+            token = await promptForAdminToken(message);
             message = t('auth.invalid');
             continue;
         }
         // Any other refusal is not something the operator can retry away.
-        await requestToken(await _authFailureMessage(response));
+        await promptForAdminToken(await _authFailureMessage(response));
         return false;
     }
 }

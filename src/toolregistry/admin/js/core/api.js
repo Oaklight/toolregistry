@@ -20,7 +20,7 @@ class AdminAPI {
     }
 
     async request(path, options = {}, authRetried = false) {
-        const tokenAtStart = this.token;
+        const requestToken = this.token;
         const sentToken = !!this.token;
         // Build headers per attempt and let the current token win:
         // spreading the caller's headers last would re-send the token
@@ -51,8 +51,8 @@ class AdminAPI {
                 // Another request may have obtained a token while this
                 // one was in flight; reuse it instead of asking again.
                 let token = this.token;
-                if (!token || token === tokenAtStart) {
-                    token = await requestToken('');
+                if (!token || token === requestToken) {
+                    token = await promptForAdminToken('');
                     if (!token) throw new Error(t('error.unauthorized'));
                     // Keep the bearer token in memory only.  The server
                     // issues an HttpOnly session cookie on the first
@@ -68,6 +68,10 @@ class AdminAPI {
             if (!response.ok) {
                 throw this.httpError(await this.errorMessage(response), response);
             }
+            // A successful call proves the credential was accepted: take the
+            // sign-in view down even when another in-flight request was the
+            // one that obtained the token.
+            completeAuth();
             return await response.json();
         } catch (error) {
             if (error.name === 'TypeError') {
