@@ -76,7 +76,9 @@ registry.discover_skills(
 )
 ```
 
-`reload_skills()` 会从磁盘重新执行每个来源，包括 `apply_skill_config()` 添加的来源；每个来源保留自己的路径、递归标志、过滤器与覆盖设置。发现的无效技能会被跳过，不会中断其余扫描；`skill_discovery_errors()` 返回失败的目录，`validate_skills(include_failures=True)` 会把它们并入验证报告。
+`reload_skills()` 会从磁盘重新执行每个来源，包括 `apply_skill_config()` 添加的来源；每个来源保留自己的路径、递归标志、过滤器与覆盖设置。每次 `discover_skills()` 调用都会替换重载计划，除非传入 `append=True`；`apply_skill_config()` 会自动传入，因此每个配置来源都能在重载后保留。发现的无效技能会被跳过，不会中断其余扫描；`skill_discovery_errors()` 返回失败的目录，`validate_skills(include_failures=True)` 会把它们并入验证报告。
+
+`validate_skills()` 对名称只提供建议：名称不符合 Agent Skills 约定的技能仍会在发现时注册，工具构建器会清洗对外暴露的工具名。
 
 ## 选择技能
 
@@ -108,7 +110,7 @@ registry.register_skill_tools(mode="per-skill")      # 每个技能一个工具
 registry.register_skill_tools(mode="both")
 ```
 
-`namespace=None` 时，catalog 工具名为 `list_skills`、`get_skill`、`read_skill_resource`；per-skill 工具使用 `skill_` 前缀。per-skill 工具名会规范化为 snake_case，其余不在 `[A-Za-z0-9_-]` 内的字符替换为 `_`，以确保 provider API 接受。若两个技能规范化后同名，则保留第一个工具并发出 `UserWarning`。`unregister_skill_tools()` 只删除元数据来源为 `skills` 的工具。
+`namespace=None` 时，catalog 工具名为 `list_skills`、`get_skill`、`read_skill_resource`；per-skill 工具使用 `skill_` 前缀。per-skill 工具名会规范化为 snake_case，折叠重音符号，其余不在 `[A-Za-z0-9_-]` 内的字符替换为 `_`。包含命名空间在内最多 64 个字符；超长名称和规范化后冲突的名称会附加稳定哈希后缀，确保不同技能仍然不同。`unregister_skill_tools()` 只删除元数据来源为 `skills` 的工具。
 
 catalog 工具支持按查询排序：
 
@@ -170,11 +172,11 @@ system_prompt = (
 )
 ```
 
-`activate_skill(..., inline_resources=True)` 会把较小的资源文件嵌入激活提示词。超过 `max_inline_bytes`（默认 64 KiB）的文件只列出路径。
+`activate_skill(..., inline_resources=True)` 会把较小的资源文件嵌入激活提示词。超过 `max_inline_bytes`（默认 64 KiB）的文件只列出路径。内联按技能整体生效：只要任一捆绑文件解析后离开技能目录，激活就会报错，而不会内联其余文件。
 
 ## 资源安全
 
-资源读取只接受相对于技能目录的路径。绝对路径、`..` 片段以及解析后离开目录的符号链接都会被拒绝。默认读取上限为 64 KiB，即使调用方请求更多也不会超过 10 MiB。二进制资源可由 `resources()` 列出，但 `read_skill_resource()` 会抛出错误，而不是返回无法解码的文本。
+资源读取只接受相对于技能目录的路径。绝对路径、`..` 片段以及解析后离开目录的符号链接都会被拒绝。默认读取上限为 64 KiB，即使调用方请求更多也不会超过 10 MiB。二进制资源可由 `resources()` 列出，但 `read_skill_resource()` 会抛出错误，而不是返回无法解码的文本。`resources()` 也会递归列出嵌套文件，而激活时内联仅包含 `scripts/`、`references/` 与 `assets/` 下的顶层文件。
 
 ## 管理面板
 
