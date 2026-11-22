@@ -76,7 +76,9 @@ registry.discover_skills(
 )
 ```
 
-`reload_skills()` re-runs every source from disk, including sources added by `apply_skill_config()`, and each source keeps its own paths, recursion flag, filters, and override setting. Invalid skills are skipped during discovery and do not break the rest of the scan; `skill_discovery_errors()` returns the failed directories, and `validate_skills(include_failures=True)` includes them in the validation report.
+`reload_skills()` re-runs every source from disk, including sources added by `apply_skill_config()`, and each source keeps its own paths, recursion flag, filters, and override setting. Each `discover_skills()` call replaces the reload plan unless you pass `append=True`; `apply_skill_config()` does this automatically so every configured source survives a reload. Invalid skills are skipped during discovery and do not break the rest of the scan; `skill_discovery_errors()` returns the failed directories, and `validate_skills(include_failures=True)` includes them in the validation report.
+
+`validate_skills()` is advisory for names: discovery still registers a skill whose name is outside the Agent Skills convention, and the tool builder sanitizes the exposed tool name.
 
 ## Selecting skills
 
@@ -108,7 +110,7 @@ registry.register_skill_tools(mode="per-skill")      # one tool per skill
 registry.register_skill_tools(mode="both")
 ```
 
-With `namespace=None`, the catalog tools are named `list_skills`, `get_skill`, and `read_skill_resource`; per-skill tools use the `skill_` prefix. Per-skill names are normalized to snake_case and any remaining character outside `[A-Za-z0-9_-]` becomes `_`, so provider APIs accept them. If two skills normalize to the same name, the first tool is kept and a `UserWarning` is emitted. `unregister_skill_tools()` removes only tools whose metadata source is `skills`.
+With `namespace=None`, the catalog tools are named `list_skills`, `get_skill`, and `read_skill_resource`; per-skill tools use the `skill_` prefix. Per-skill names are normalized to snake_case, accents are folded, and any remaining character outside `[A-Za-z0-9_-]` becomes `_`. The whole name is capped at 64 characters including the namespace; longer names and sanitized collisions get a stable hash suffix, so distinct skills stay distinct. `unregister_skill_tools()` removes only tools whose metadata source is `skills`.
 
 The catalog tools support optional query ranking:
 
@@ -170,11 +172,11 @@ system_prompt = (
 )
 ```
 
-`activate_skill(..., inline_resources=True)` embeds small resource files in the activation prompt. Files above `max_inline_bytes` (64 KiB by default) are listed by path only.
+`activate_skill(..., inline_resources=True)` embeds small resource files in the activation prompt. Files above `max_inline_bytes` (64 KiB by default) are listed by path only. Inlining is all-or-nothing per skill: if any bundled file escapes the skill directory, activation raises instead of inlining the remaining files.
 
 ## Resource safety
 
-Resource reads accept only paths relative to the skill directory. Absolute paths, `..` segments, and symlinks that resolve outside the directory are rejected. Reads are capped at 64 KiB by default and at 10 MiB even when a caller requests more. Binary resources are listed by `resources()` but `read_skill_resource()` raises instead of returning undecodable text.
+Resource reads accept only paths relative to the skill directory. Absolute paths, `..` segments, and symlinks that resolve outside the directory are rejected. Reads are capped at 64 KiB by default and at 10 MiB even when a caller requests more. Binary resources are listed by `resources()` but `read_skill_resource()` raises instead of returning undecodable text. `resources()` also walks nested directories, while inline activation includes only top-level files under `scripts/`, `references/`, and `assets/`.
 
 ## Admin panel
 
