@@ -11,7 +11,9 @@ from toolregistry import ToolRegistry
 from toolregistry.config import SkillSource, ToolConfig, load_config, save_config
 from toolregistry.skills import (
     KeywordSelector,
+    Skill,
     SkillNotFoundError,
+    SkillProperties,
     SkillResourceError,
     SkillRoot,
     SkillStore,
@@ -488,6 +490,38 @@ class TestRegistrySkills:
         registry.discover_skills(tmp_path)
 
         assert registry.register_skill_tools(namespace=None)[0] == "list_skills"
+
+    def test_per_skill_name_is_sanitized_for_tool_names(self) -> None:
+        registry = ToolRegistry()
+        registry.add_skill(
+            Skill(
+                SkillProperties(name="a/b:c", description="Odd name"),
+                "Odd instructions.",
+            )
+        )
+
+        with pytest.warns(UserWarning, match="not a valid tool name"):
+            names = registry.register_skill_tools(mode="per-skill")
+
+        assert names == ["skills-a_b_c"]
+        result = registry.invoke("skills-a_b_c", {})
+        assert isinstance(result.result, str)
+        assert "Odd instructions." in result.result
+
+    def test_sanitized_tool_name_collision_warns_and_keeps_first(self) -> None:
+        registry = ToolRegistry()
+        registry.add_skill(
+            Skill(SkillProperties(name="a/b", description="Slash"), "Slash body.")
+        )
+        registry.add_skill(
+            Skill(SkillProperties(name="a:b", description="Colon"), "Colon body.")
+        )
+
+        with pytest.warns(UserWarning) as record:
+            names = registry.register_skill_tools(mode="per-skill")
+
+        assert names == ["skills-a_b"]
+        assert any("collides" in str(item.message) for item in record)
 
 
 # ---------------------------------------------------------------------------
