@@ -25,6 +25,15 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8081/api/tools
 | `POST` | `/api/tools/{name}/override` | Override description, title, tags and execution hints |
 | `DELETE` | `/api/tools/{name}/override` | Restore the original definition |
 
+### Agent Skills
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/skills` | List discovered skills, roots, and exposed tool names |
+| `GET` | `/api/skills/{name}` | Get metadata, instructions, and resources |
+| `POST` | `/api/skills/{name}/activate` | Return the activation prompt |
+| `GET` | `/api/skills/{name}/resources/{path}` | Read one bundled text resource |
+
 ### Namespaces
 
 | Method | Endpoint | Description |
