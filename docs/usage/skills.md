@@ -106,7 +106,7 @@ registry.register_skill_tools(mode="per-skill")      # one tool per skill
 registry.register_skill_tools(mode="both")
 ```
 
-With `namespace=None`, the catalog tools are named `list_skills`, `get_skill`, and `read_skill_resource`; per-skill tools use the `skill_` prefix. `unregister_skill_tools()` removes only tools whose metadata source is `skills`.
+With `namespace=None`, the catalog tools are named `list_skills`, `get_skill`, and `read_skill_resource`; per-skill tools use the `skill_` prefix. Per-skill names are normalized to snake_case and any remaining character outside `[A-Za-z0-9_-]` becomes `_`, so provider APIs accept them. If two skills normalize to the same name, the first tool is kept and a `UserWarning` is emitted. `unregister_skill_tools()` removes only tools whose metadata source is `skills`.
 
 The catalog tools support optional query ranking:
 
