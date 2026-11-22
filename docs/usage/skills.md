@@ -106,7 +106,7 @@ registry.register_skill_tools(mode="per-skill")      # 每个技能一个工具
 registry.register_skill_tools(mode="both")
 ```
 
-`namespace=None` 时，catalog 工具名为 `list_skills`、`get_skill`、`read_skill_resource`；per-skill 工具使用 `skill_` 前缀。`unregister_skill_tools()` 只删除元数据来源为 `skills` 的工具。
+`namespace=None` 时，catalog 工具名为 `list_skills`、`get_skill`、`read_skill_resource`；per-skill 工具使用 `skill_` 前缀。per-skill 工具名会规范化为 snake_case，其余不在 `[A-Za-z0-9_-]` 内的字符替换为 `_`，以确保 provider API 接受。若两个技能规范化后同名，则保留第一个工具并发出 `UserWarning`。`unregister_skill_tools()` 只删除元数据来源为 `skills` 的工具。
 
 catalog 工具支持按查询排序：
 
