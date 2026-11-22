@@ -61,7 +61,6 @@ globalThis.document = {
 };
 globalThis.window = { requestAnimationFrame: (fn) => fn() };
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
-globalThis.t = (key) => key;
 globalThis.API_BASE = 'http://example';
 globalThis.AUTH_TOKEN = '';
 globalThis.autoRefreshInterval = null;
@@ -84,6 +83,10 @@ globalThis.fetch = async (url, options = {}) => {
 };
 
 vm.runInContext(code, vm.createContext(globalThis));
+// i18n.js declares t as a global.  Install the identity stub after the
+// script runs so assertions see message keys, not the text of whichever
+// language is current.
+globalThis.t = (key) => key;
 
 (async () => {
   const api = globalThis.__api;
