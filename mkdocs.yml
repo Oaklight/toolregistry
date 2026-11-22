@@ -140,6 +140,7 @@ nav:
           - 权限系统: usage/permissions.md
           - 消息构建: usage/message_building.md
           - 声明式配置: usage/configuration.md
+          - Agent 技能: usage/skills.md
   - 示例:
       - 概览: examples/index.md
       - 连续工具调用: examples/consecutive_tool_calls.md

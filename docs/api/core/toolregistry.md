@@ -311,6 +311,26 @@ def log_all(tool_name: str, tool, registry) -> None:
 registry.add_post_register_hook(log_all)
 ```
 
+## Agent 技能
+
+`SkillsMixin` 为同一个注册表加入技能加载能力。存储按需创建，因此从不调用技能方法的注册表不会访问文件系统。
+
+```python
+registry.discover_skills()                    # 标准目录或显式路径
+registry.discover_skills("/opt/skills", recursive=True, exclude=["*-draft"])
+registry.list_skills()                        # 排序后的 Skill 对象
+registry.select_skills("总结一份 PDF", top_k=3, available_tools=registry.list_tools())
+registry.skills_catalog()                     # 第 1 层提示词
+registry.activate_skill("pdf-processing")     # 第 2 层提示词
+registry.read_skill_resource("pdf-processing", "references/guide.md")  # 第 3 层
+registry.reload_skills()
+registry.validate_skills()
+```
+
+使用 `register_skill_tools()` 将技能暴露为工具。模式包括 `"catalog"`（默认）、`"per-skill"` 和 `"both"`；生成的名称和配置结构见 [Agent 技能](../../usage/skills.md)。
+
+`apply_skill_config()` 接受 `ToolConfig` 或 `SkillSource` 可迭代对象，按配置文件目录解析相对路径，并注册声明的工具集。
+
 ## 集成点
 
 ToolRegistry 提供以下集成点：

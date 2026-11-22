@@ -18,6 +18,8 @@ hide:
 
 ### 新增
 
+- **Agent 技能可从标准目录加载并作为工具运行**（#476）：`ToolRegistry` 组合新的 `SkillsMixin`，底层使用 vendored 的 zerodep `skills` 与 `frontmatter` 模块。`discover_skills()` 按确定优先级扫描系统、用户和项目目录，也接受根目录、技能目录或 `SKILL.md` 文件。目录、激活提示词和安全资源读取实现三层渐进式披露；`register_skill_tools()` 以 `catalog`、`per-skill` 或 `both` 模式把技能暴露为工具，因此所有 provider 都走普通 schema 与执行路径。声明式 `skills:` 来源由 `ToolConfig` 解析，并通过 `apply_skill_config()` 应用；相对路径相对于配置文件解析，多个来源共享同一个存储。资源读取拒绝绝对路径、`..` 和逃逸符号链接，并限制内容大小。管理面板新增只读的“技能”标签页，提供列表、详情、激活和资源端点。见 [Agent 技能](usage/skills.md)。
+
 - **管理面板改为通过登录页登录，并提供退出登录**（#281）：面板不再用原生提示框索要令牌。`<body data-auth>` 控制外壳状态（`pending`、`login`、`ok`），CSS 在服务器接受凭据前完全隐藏外壳，因此表单背后看不到任何布局；令牌被拒绝或触发锁定后，登录页保留并显示原因。登录页自带令牌显隐按钮、大写锁定提示，以及独立的明暗切换和语言切换；这两项偏好与面板读取同一份 `localStorage`，未登录时同样生效，语言多于两种时语言控件变为下拉菜单。退出登录会删除会话 cookie：`POST /api/logout` 会抑制每个已认证响应都会执行的滑动 cookie 续发，否则该续发会在删除之后重新种回 cookie。
 
 ## [0.21.0] - 2026-11-09

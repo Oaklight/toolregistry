@@ -68,6 +68,11 @@ tools:
     transport: http
     url: http://localhost:8080/mcp
     namespace: remote_mcp2
+
+skills:
+  - paths: [skills]
+    expose: catalog
+    namespace: skills
 ```
 
 ### JSONC 示例
@@ -181,6 +186,37 @@ tools:
 
 如果同时指定了 `token_env` 和 `token`，`token_env` 优先。
 
+### `skills` — Agent 技能根目录
+
+顶层 `skills` 块与 `tools` 分开，因为技能是提示词级包，而不是可调用端点。单个映射会被视为只含一项的列表。
+
+```yaml
+skills:
+  - paths: [skills, ../shared-skills]
+    recursive: true
+    override: true
+    exclude: ["*-draft"]
+    expose: catalog
+    namespace: skills
+  - path: vendor/skills
+    expose: per-skill
+    limit: 20
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `path` / `paths` | string 或 list | 标准目录 | 根目录、技能目录或 `SKILL.md` 文件；相对路径相对于配置文件解析 |
+| `recursive` | bool | `true` | 遍历嵌套目录 |
+| `override` | bool | `true` | 允许后加载的来源替换同名技能 |
+| `include` | string 或 list | — | 保留的名称通配；与 `exclude` 互斥 |
+| `exclude` | string 或 list | — | 排除的名称通配 |
+| `enabled` | bool | `true` | 为 false 时跳过该来源 |
+| `expose` | string | `"catalog"` | `"catalog"`、`"per-skill"`、`"both"` 或 `"none"` |
+| `namespace` | string 或 null | `"skills"` | 生成工具的命名空间 |
+| `limit` | int | — | per-skill 模式下的最大工具数 |
+
+`load_config()` 只解析并校验该块，不会自动应用。构造注册表后将其传给 `ToolRegistry.apply_skill_config()`。生成工具名与使用模式见 [Agent 技能](skills.md)。
+
 ## 过滤模式
 
 ### 拒绝列表（默认）
@@ -289,6 +325,7 @@ class ToolConfig:
     disabled: tuple[str, ...]
     enabled: tuple[str, ...]
     tools: tuple[ToolSource, ...]  # PythonSource | MCPSource | OpenAPISource
+    skills: tuple[SkillSource, ...]  # 由顶层 skills 块解析
     source: str  # 配置文件路径
 ```
 
