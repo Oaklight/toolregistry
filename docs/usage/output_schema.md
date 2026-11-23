@@ -63,8 +63,11 @@ tool = Tool.from_function(
 
 - Primitives: `str`, `int`, `float`, `bool`
 - Containers: `list[T]`, `dict[str, T]`, `tuple[...]`, including a fixed tuple
+- Abstract containers: `Mapping[str, T]`, `MutableMapping[str, T]`,
+  `Sequence[T]`, `Iterable[T]`, and `Collection[T]`
 - `Literal[...]` and `Enum` subclasses
-- `None` and `Optional[...]` / `T | None` as nullable
+- `Optional[...]` / `T | None` as nullable; a bare `None` return publishes no
+  schema
 - `TypedDict`, including `total=False` and `NotRequired`
 - Dataclasses, including fields with defaults
 - Pydantic `BaseModel` subclasses
