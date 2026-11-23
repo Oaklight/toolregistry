@@ -27,6 +27,11 @@ DEFAULT_MAX_RESULT_SIZE = 64_000
 #: Marker budget reserved for the line-aware omission notice.
 _LINE_MARKER_RESERVE = 48
 
+#: Marker budget reserved for the final text block a truncated content-block
+#: list gains.  It covers the longest notice, which names the persisted
+#: ``res_`` id and the ``read_result`` hint.
+CONTENT_BLOCK_MARKER_RESERVE = 128
+
 #: Smallest per-string cap applied when a JSON document is pruned.
 _MIN_STRING_LIMIT = 64
 
@@ -87,17 +92,41 @@ class TruncatedResult:
     def __str__(self) -> str:
         if not self.truncated:
             return self.content
-        header_parts = [
-            f"Truncated: {self.original_size} chars -> {len(self.content)} chars"
-        ]
-        if self.result_id:
-            header_parts.append(
-                f"full output: {self.result_id} (read it with read_result)"
-            )
-        elif self.full_path:
-            header_parts.append("full output: persisted")
-        header = " | ".join(header_parts)
-        return f"[{header}]\n{self.content}"
+        notice = truncation_notice(
+            self.original_size,
+            len(self.content),
+            result_id=self.result_id,
+            full_path=self.full_path,
+        )
+        return f"{notice}\n{self.content}"
+
+
+def truncation_notice(
+    original_size: int,
+    kept_size: int,
+    *,
+    result_id: str | None = None,
+    full_path: str | None = None,
+) -> str:
+    """Return the bracket notice that accompanies a truncated result.
+
+    Args:
+        original_size: Size before truncation, in characters.
+        kept_size: Size of the content the caller kept.
+        result_id: Opaque id of the persisted full result, when it was stored.
+        full_path: Host path of the persisted result, used only when no
+            opaque id is available.
+
+    Returns:
+        A one-line notice naming both sizes and, when available, how to read
+        the full result.  A filesystem path is never rendered.
+    """
+    header_parts = [f"Truncated: {original_size} chars -> {kept_size} chars"]
+    if result_id:
+        header_parts.append(f"full output: {result_id} (read it with read_result)")
+    elif full_path:
+        header_parts.append("full output: persisted")
+    return f"[{' | '.join(header_parts)}]"
 
 
 class ResultStore:

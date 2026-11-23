@@ -244,13 +244,49 @@ class TestContentBlocks:
             {"type": "text", "text": "C" * 100},
         ]
 
-        result = registry._truncate_content_blocks(blocks, 100, "tool")
+        result = registry._truncate_content_blocks(blocks, 1000, "tool")
 
         texts = [len(block["text"]) for block in result if block["type"] == "text"]
-        assert sum(texts) <= 100
+        assert sum(texts) <= 1000
         assert texts[0] > texts[1]
         assert texts[0] > texts[2]
         assert any(block["type"] == "image" for block in result)
+        assert any(
+            block["type"] == "text" and block["text"].startswith("[Truncated:")
+            for block in result
+        )
+
+    def test_the_notice_is_the_last_block_and_keeps_the_cap(self):
+        registry = ToolRegistry()
+        blocks = [
+            {"type": "text", "text": "a" * 40_000},
+            {"type": "text", "text": "b" * 40_000},
+        ]
+
+        result = registry._truncate_content_blocks(blocks, 64_000, "tool")
+
+        assert sum(len(block["text"]) for block in result) <= 64_000
+        assert result[-1]["type"] == "text"
+        assert result[-1]["text"].startswith("[Truncated: 80000 chars -> ")
+
+    def test_truncation_persists_the_full_block_list(self):
+        registry = ToolRegistry(persist_large_results=True)
+        blocks = [{"type": "text", "text": "y" * 70_000}]
+
+        result = registry._truncate_content_blocks(blocks, 64_000, "tool")
+
+        assert "full output: res_" in result[-1]["text"]
+        assert "read it with read_result" in result[-1]["text"]
+
+    def test_an_image_block_is_untouched(self):
+        registry = ToolRegistry()
+        image = {"type": "image", "source": {"type": "base64", "data": "abc"}}
+
+        result = registry._truncate_content_blocks(
+            [{"type": "text", "text": "y" * 70_000}, image], 64_000, "tool"
+        )
+
+        assert image in result
 
 
 class TestExecutePath:
