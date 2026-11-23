@@ -191,7 +191,8 @@ with use_result_scope(ResultScope(tenant="tenant-a", session="session-1")):
 无作用域写入，`"required"` 要求任意作用域，`"session_required"` 要求带 session。
 在强制策略下缺少作用域会抛出异常，而不是写入一个公开结果。ADR-004 之前的
 `res_<12 hex>` 文件没有归属元数据，默认拒绝读取；`ResultStore(allow_legacy=True)`
-允许无作用域调用方继续读取它们。
+允许无作用域调用方继续读取它们。该开关是进程级的，任何无作用域调用方都能读取
+所有旧版 blob；因此只应在不存在无作用域请求路径时启用，并在迁移窗口结束后关闭。
 
 内置 `read_result` 工具只做本地文件 I/O。注册表在派发线程上解析作用域，在 worker
 中绑定该作用域，并始终使用线程后端运行它。这样 `use_result_scope()` 对工具调用
@@ -234,8 +235,8 @@ print(str(result))            # 头部给出 id，绝不给出路径
 包含 id、大小、SHA-256、内容类型、工具名、归属与时间戳的 `ResultInfo`，以及
 `stat(result_id, scope=...)`，读取同样的元数据但不会延长空闲 TTL。
 `put_result()` 是子类扩展点，`put()` 只是委托给它的兼容包装。注册表内置的
-`read_result` 只读取该注册表存储的结果，因此直接调用 `truncate_result` 时必须用
-同一个 store 读回。
+`read_result` 只读取该注册表自身的 store（或它与其它注册表共享的注入 store），
+因此直接调用 `truncate_result` 时必须用同一个 store 读回。
 
 ### TruncatedResult 字段
 
