@@ -137,6 +137,7 @@ nav:
           - Tool Discovery: usage/tool_discovery.md
           - Rationale-Augmented Calling: usage/think_augmented.md
           - Result Size Management: usage/result_management.md
+          - Output Schemas: usage/output_schema.md
           - Permissions: usage/permissions.md
           - Message Building: usage/message_building.md
           - Declarative Configuration: usage/configuration.md
