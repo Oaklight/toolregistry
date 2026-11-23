@@ -70,9 +70,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 #### Core
 
+- **Vendored zerodep modules follow the 2026.11.20 release** (#486): `httpclient` moves to 0.7.4 and `httpserver` to 0.8.0. The async client now sends `Host: host:port` when the port is not the scheme default and brackets IPv6 literals, matching the sync path; the server runs `after_request` hooks for every response it writes, including 404/405, before-request short-circuits and read rejections, and exposes `RejectedRequest.query_string`. The lock pins `v2026.11.20`; `frontmatter` 0.3.1 and `skills` 0.5.1 stay ahead of upstream deliberately.
+
 - **`utils.py` is split by concern** (#437): tool-name normalization and the registration filter moved to `toolregistry._names`, base-URL HTTP clients and `HttpClientConfig` to `toolregistry._http`, and tool-result encoding to `toolregistry._serialisation`. `toolregistry.utils` re-exports every previous name, so downstream imports such as `compute_schema_hash` and `ToolResultJSONEncoder` are unchanged. `api/helpers.md` documents the new homes, and `AGENTS.md` now describes the real package tree, pinned by a test that checks every path it names. The registration filter's warning is now attributed to `_names.py`, where the filter lives.
 
 - **Breaking:** `set_permission_policy()` requires a `PermissionPolicy` (#467). Any other object raises `TypeError` at the setter. Previously a duck-typed policy was enforced by the in-process path and ignored by `toolregistry-server`, which could allow a call the policy meant to deny; the server's instance check is now a defensive duplicate of one rule rather than a second one.
+
+#### Admin panel
+
+- **The admin panel relies on the server's universal after-hooks** (#486): error paths no longer add CORS or security headers themselves, so a read rejection such as `413` carries the same headers as a routed response. An untrusted `Host` now answers `421 Misdirected Request` instead of `403`.
 
 ### Fixed
 
