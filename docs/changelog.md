@@ -70,9 +70,15 @@ hide:
 
 #### 核心
 
+- **内置 zerodep 模块跟进 2026.11.20 版本**（#486）：`httpclient` 升级到 0.7.4，`httpserver` 升级到 0.8.0。异步客户端现在对非默认端口发送 `Host: host:port`，并用方括号包裹 IPv6 字面量，与同步路径一致；服务器对写出的每个响应都运行 `after_request` 钩子，包括 404/405、before-request 短路和读取阶段的拒绝，并暴露 `RejectedRequest.query_string`。锁文件固定到 `v2026.11.20`；`frontmatter` 0.3.1 与 `skills` 0.5.1 仍有意保留在上游版本之前。
+
 - **`utils.py` 按职责拆分**（#437）：工具名标准化与注册过滤器移至 `toolregistry._names`，基础 URL 的 HTTP 客户端与 `HttpClientConfig` 移至 `toolregistry._http`，工具结果编码移至 `toolregistry._serialisation`。`toolregistry.utils` 重新导出此前的所有名称，因此 `compute_schema_hash`、`ToolResultJSONEncoder` 等下游导入保持不变。`api/helpers.md` 记录新的实现位置，`AGENTS.md` 改为描述真实的包结构，并由一个检查其所列每个路径是否存在的测试固定。注册过滤器的警告现在归属到过滤器所在的 `_names.py`。
 
 - **破坏性变更：** `set_permission_policy()` 要求传入 `PermissionPolicy`（#467）。其他对象会在 setter 处抛出 `TypeError`。此前鸭子类型策略在进程内路径会被执行，却被 `toolregistry-server` 忽略，可能放行策略本要拒绝的调用；服务器端的实例检查现在只是同一条规则的防御性重复，而不是第二条规则。
+
+#### 管理面板
+
+- **管理面板改为依赖服务器的统一 after 钩子**（#486）：错误路径不再自行添加 CORS 与安全响应头，因此读取阶段的拒绝（例如 `413`）与正常路由响应携带同样的头。不可信的 `Host` 现在返回 `421 Misdirected Request`，不再返回 `403`。
 
 ### 修复
 
