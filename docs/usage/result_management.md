@@ -64,6 +64,10 @@ registry = ToolRegistry(default_max_result_size=None)
 单工具的 `max_result_size` 优先于注册表默认值。工具将 `max_result_size` 留为
 `None` 时会使用注册表默认值；除非修改，该默认值为 64,000 个字符。
 
+该上限在 `execute_tool_calls()` 完成结果时应用。直接经 `route.handler` 调用的工具
+（MCP 适配器即走此路径）尚未应用该上限，见
+[toolregistry-server#286](https://github.com/Oaklight/toolregistry-server/issues/286)。
+
 ### Token 预算
 
 `max_result_tokens` 以 token 为单位设置同样的限制：
