@@ -90,8 +90,12 @@ state           active / ended / expired
 - OpenAPI is stateless.  The caller obtains a server-issued, signed,
   principal-bound, expiring token from `POST /sessions`.  `X-Agent-Session`
   may be sent as a client-side label, but a bare header is never identity and
-  never part of authorization.  Without a valid token the caller gets tenant
-  scope only, or is refused when `result_scope_policy="required"`.
+  never part of authorization.
+- `result_scope_policy` has three values.  `"optional"` is library mode.
+  `"required"` requires a scope object; a tenant-only scope `(t, None)` passes.
+  `"session_required"` requires a non-empty session and refuses a tenant-only
+  caller.  Server bootstrap sets `"required"`; a deployment that wants every
+  result session-private sets `"session_required"`.
 - The trust assumption is one operator and many agents.  The store runs under
   one OS user and the server process can read every file, so filesystem
   permissions are not a tenant boundary.  Hosted multi-customer deployments
@@ -129,6 +133,16 @@ accounting.
 - the stored `(tenant, session)` equals the caller's scope; or
 - the caller is an operator with an explicit override; or
 - the caller presents a valid capability token for that result.
+
+Scope containment is asymmetric:
+
+- A record with a session is session-private.  Only the exact `(tenant,
+  session)` pair, an operator, or a valid capability can read it.
+- A record with `session=None` is tenant-shared.  Any caller in the same
+  tenant can read it, including a caller that later obtained a session token.
+- A tenant-only caller cannot read a session-private record.  This keeps a
+  pre-token result readable after the caller obtains a token while keeping a
+  session result isolated.
 
 Unknown and unauthorized results return the same error.  This prevents the
 tool from becoming an existence oracle.
@@ -234,7 +248,7 @@ ToolRegistry(
     result_idle_ttl_seconds=60 * 60,
     result_quota_bytes=64 * 1024 * 1024,
     result_scope_provider=None,  # callable returning ResultScope | None
-    result_scope_policy="optional",  # "required" in server mode
+    result_scope_policy="optional",  # required | session_required in server mode
 )
 ```
 
@@ -272,17 +286,17 @@ Goal: make the store scope-aware without changing default behavior.
 
 - Add `ResultScope`, the optional context variable, and the scope context
   manager.  Keep explicit `scope=` as the enforcement path.
-- Add `result_scope_policy="optional"`; make `"required"` raise on a missing
-  scope.
+- Add `result_scope_policy`: `"optional"`, `"required"` (scope object needed),
+  and `"session_required"` (non-empty session needed).  A missing scope under
+  a required policy raises.
 - Add owner metadata, 128-bit ids, `stat()`, and configurable TTL/quota.
 - Widen `_RESULT_ID_PATTERN` to accept 12 and 32 hex characters in Phase 0.
   New writes use 32 hex.  Pre-upgrade files without metadata deny by default
   and are swept or migrated explicitly, so they cannot leak forever.
 - Add `result_store` and retention settings to `ToolRegistry`.
 - Make the registry-level `read_result` resolve an explicit scope when one is
-  provided.  Keep current behavior in optional library mode.
-- Bind adapter-level `read_result` handlers per request.  Do not rely on a
-  context variable inside a thread or process backend.
+  provided.  Keep current behavior in optional library mode.  Do not rely on
+  a context variable inside a thread or process backend.
 - Apply the same scope API to `default_result_store()`.
 - Add orphan-blob sweep and blob-before-metadata write order.
 - Add tests for scope matching, id width compatibility, id entropy, TTL,
@@ -300,7 +314,13 @@ Goal: isolate agents that share one registry.
 - Add `POST /sessions`, returning a signed, principal-bound, expiring session
   token for OpenAPI.  `X-Agent-Session` is a label only and never part of
   authorization.
-- Set `result_scope_policy="required"` at server bootstrap.
+- Set `result_scope_policy="required"` at server bootstrap; deployments that
+  want every result session-private set `"session_required"`.
+- Bind adapter-level `read_result` handlers per request, closing over the
+  resolved scope.  Keep the registry-level tool as the library fallback.
+- Implement asymmetric containment: session records are session-private;
+  tenant-only records are tenant-shared and readable by any caller in the
+  same tenant.
 - Revoke results on session end, with a configurable grace period.  A
   disconnect is non-terminal; an explicit revoke is terminal.
 - Enforce per-tenant and per-session quotas.  A quota failure degrades to
@@ -313,10 +333,11 @@ Goal: isolate agents that share one registry.
 - Enable per-tenant encryption for hosted multi-customer deployments.
 
 Acceptance: two keys cannot read each other's results; two sessions of one
-key cannot read each other's results; disconnect plus grace expiry removes
-results; a resume before grace reaches the same logical session; one tenant
-cannot evict another tenant's live result; quota pressure leaves the tool call
-successful with truncated output.
+key cannot read each other's results; a caller in a tenant can read that
+tenant's tenant-shared results but not another session's private result;
+disconnect plus grace expiry removes results; a resume before grace reaches
+the same logical session; one tenant cannot evict another tenant's live
+result; quota pressure leaves the tool call successful with truncated output.
 
 ### Phase 2 — Access ergonomics
 
