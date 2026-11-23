@@ -14,7 +14,9 @@ from toolregistry.llm.truncation import (
     default_result_store,
 )
 
-_RESULT_ID = re.compile(r"res_[0-9a-f]{12}")
+# New ids carry 128 random bits; match the long form first so a 32-hex id is
+# not truncated to its 12-hex prefix.
+_RESULT_ID = re.compile(r"res_(?:[0-9a-f]{32}|[0-9a-f]{12})")
 
 
 def _make_registry(**kwargs):

@@ -22,7 +22,14 @@ from .llm.truncation import (
     CONTENT_BLOCK_MARKER_RESERVE,
     DEFAULT_MAX_RESULT_SIZE,
     DEFAULT_READ_RESULT_LIMIT,
+    DEFAULT_RESULT_IDLE_TTL_SECONDS,
+    DEFAULT_RESULT_QUOTA_BYTES,
+    DEFAULT_RESULT_SCOPE_POLICY,
+    DEFAULT_RESULT_TTL_SECONDS,
+    ResultScope,
+    ResultScopePolicy,
     ResultStore,
+    current_result_scope,
     truncate_result,
     truncation_notice,
 )
@@ -177,6 +184,12 @@ class ToolRegistry(
         default_max_result_size: int | None = DEFAULT_MAX_RESULT_SIZE,
         default_max_result_tokens: int | None = None,
         persist_large_results: bool = False,
+        result_store: ResultStore | None = None,
+        result_ttl_seconds: float = DEFAULT_RESULT_TTL_SECONDS,
+        result_idle_ttl_seconds: float | None = DEFAULT_RESULT_IDLE_TTL_SECONDS,
+        result_quota_bytes: int = DEFAULT_RESULT_QUOTA_BYTES,
+        result_scope_policy: ResultScopePolicy = DEFAULT_RESULT_SCOPE_POLICY,
+        result_scope_provider: Callable[[], ResultScope | None] | None = None,
         think_augment: bool = False,
         tool_discovery: bool = False,
         name_sep: Literal["-", "."] = "-",
@@ -206,11 +219,37 @@ class ToolRegistry(
             persist_large_results: Store each truncated full result in a
                 private per-run directory and register a ``read_result``
                 tool that pages through it by opaque id.  The truncation
-                header then names an id (``res_<12 hex>``), never a
+                header then names an id (``res_<32 hex>``), never a
                 filesystem path.  Defaults to ``False``: nothing is written
                 to disk.  Files are created with mode ``0600``, expire after
                 24 hours, and are evicted oldest-first beyond a 64 MiB
                 quota.
+            result_store: A prepared store to use instead of building one
+                from the retention arguments.  Supplying a store enables
+                persistence even when *persist_large_results* is ``False``.
+                The per-store retention of the injected store wins; the
+                ``result_*`` keyword arguments below are ignored.
+            result_ttl_seconds: Hard lifetime of a persisted result, in
+                seconds, measured from creation.  Reads never extend it.
+            result_idle_ttl_seconds: Sliding lifetime measured from the last
+                successful read.  ``None`` disables the sliding deadline.
+            result_quota_bytes: Total bytes the result directory may hold.
+                Older results are evicted first, but the result being
+                written is retained even when it alone is over quota.
+            result_scope_policy: ``"optional"`` (default) accepts unscoped
+                library writes; ``"required"`` requires a
+                :class:`~toolregistry.llm.truncation.ResultScope`; and
+                ``"session_required"`` additionally requires a session id.
+                A missing scope under a required policy raises instead of
+                silently writing a readable result.
+            result_scope_provider: Callable that returns the
+                :class:`~toolregistry.llm.truncation.ResultScope` to attach
+                to results written by this registry.  When ``None`` the
+                scope bound with
+                :func:`~toolregistry.llm.truncation.use_result_scope` is
+                used.  Server adapters pass an explicit provider instead of
+                relying on context variables, because executor backends do
+                not carry them across threads or processes.
             think_augment: Enable thought-augmented tool calling globally.
                 When ``True``, a ``toolcall_reason`` property is
                 included in every tool's schema so LLMs can articulate
@@ -264,6 +303,19 @@ class ToolRegistry(
                 f"Invalid default_max_result_tokens {default_max_result_tokens!r}, "
                 "must be a non-negative integer or None"
             )
+        if result_store is not None and not isinstance(result_store, ResultStore):
+            raise TypeError("result_store must be a ResultStore or None")
+        if result_scope_policy not in (
+            "optional",
+            "required",
+            "session_required",
+        ):
+            raise ValueError(
+                f"Invalid result_scope_policy {result_scope_policy!r}, must be "
+                "'optional', 'required', or 'session_required'"
+            )
+        if result_scope_provider is not None and not callable(result_scope_provider):
+            raise TypeError("result_scope_provider must be callable or None")
         self.name = name
         self._thread_backend = ThreadBackend()
         self._process_backend = ProcessPoolBackend()
@@ -271,8 +323,21 @@ class ToolRegistry(
         self._execution_mode: Literal["process", "thread"] = "process"
         self._default_max_result_size = default_max_result_size
         self._default_max_result_tokens = default_max_result_tokens
-        self._persist_large_results = persist_large_results
-        self._result_store = ResultStore() if persist_large_results else None
+        self._persist_large_results = persist_large_results or (
+            result_store is not None
+        )
+        if result_store is not None:
+            self._result_store = result_store
+        elif self._persist_large_results:
+            self._result_store = ResultStore(
+                ttl=result_ttl_seconds,
+                idle_ttl=result_idle_ttl_seconds,
+                quota=result_quota_bytes,
+                scope_policy=result_scope_policy,
+            )
+        else:
+            self._result_store = None
+        self._result_scope_provider = result_scope_provider
         self._think_augment = think_augment
         self._derive_output_schemas = derive_output_schemas
         self._name_sep: Literal["-", "."] = name_sep
@@ -297,7 +362,7 @@ class ToolRegistry(
         # about every change that can move a tool in or out of it.
         self.on_change(self._sync_tool_discovery)
 
-        if persist_large_results:
+        if self._persist_large_results:
             self._register_read_result_tool()
 
         if tool_discovery:
@@ -306,7 +371,7 @@ class ToolRegistry(
     def _register_read_result_tool(self) -> None:
         """Register the built-in ``read_result`` tool.
 
-        The tool is only registered when *persist_large_results* is on: with
+        The tool is only registered when result persistence is on: with
         no store there is nothing to read, and a tool that always fails
         would only pollute the model's tool list.
         """
@@ -346,8 +411,15 @@ class ToolRegistry(
     ) -> str:
         """Read a slice of a stored, truncated tool result.
 
+        Access is checked against the scope this registry resolves for the
+        current caller.  In library mode that scope is ``None`` and any
+        valid id is readable, which preserves the old behavior.  Server
+        adapters bind either a scope provider on the registry or a
+        per-request ``read_result`` handler, so one agent cannot read
+        another agent's result.
+
         Args:
-            id: Opaque result id from a truncation header (``res_<12 hex>``).
+            id: Opaque result id from a truncation header (``res_<32 hex>``).
             offset: Character offset to start at.
             limit: Maximum number of characters to return.
 
@@ -355,13 +427,31 @@ class ToolRegistry(
             The requested slice of the full result.
 
         Raises:
-            ValueError: If the id is not a valid result id, is unknown, has
-                expired, or *offset*/*limit* is not a non-negative integer.
+            ValueError: If the id is not a valid result id, is unknown, is
+                not owned by the caller's scope, has expired, or
+                *offset*/*limit* is not a non-negative integer.
             RuntimeError: If result persistence is not enabled.
         """
         if self._result_store is None:
             raise RuntimeError("result persistence is not enabled")
-        return self._result_store.read(id, offset=offset, limit=limit)
+        return self._result_store.read(
+            id,
+            offset=offset,
+            limit=limit,
+            scope=self._current_result_scope(),
+        )
+
+    def _current_result_scope(self) -> ResultScope | None:
+        """Return the owner scope for results written and read here.
+
+        An explicit provider wins over the context variable.  Server
+        adapters use a provider so the scope is bound per request and does
+        not depend on executor backends carrying a context variable into a
+        worker thread or process.
+        """
+        if self._result_scope_provider is not None:
+            return self._result_scope_provider()
+        return current_result_scope()
 
     @property
     def name_sep(self) -> Literal["-", "."]:
@@ -1456,12 +1546,16 @@ class ToolRegistry(
         max_size = self._result_char_budget(tool_name)
 
         if max_size is not None:
+            scope = (
+                self._current_result_scope() if self._persist_large_results else None
+            )
             tr = truncate_result(
                 result_str,
                 max_size,
                 tool_name=tool_name,
                 persist=self._persist_large_results,
                 store=self._result_store,
+                scope=scope,
             )
             if tr.truncated:
                 logger.info(
@@ -1570,9 +1664,14 @@ class ToolRegistry(
         result_id = None
         full_path = None
         if self._persist_large_results and self._result_store is not None:
-            result_id, full_path = self._result_store.put(
-                json.dumps(blocks, ensure_ascii=False, default=str)
+            info = self._result_store.put_result(
+                json.dumps(blocks, ensure_ascii=False, default=str),
+                scope=self._current_result_scope(),
+                tool_name=tool_name,
+                content_type="application/json",
             )
+            result_id = info.result_id
+            full_path = info.path
         truncated.append(
             {
                 "type": "text",
