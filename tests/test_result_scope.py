@@ -180,6 +180,51 @@ class TestScopeContext:
             == "session-1"
         )
 
+    @pytest.mark.parametrize("execution_mode", ["thread", "process"])
+    def test_the_context_scope_reaches_the_read_result_tool(
+        self, tmp_path, execution_mode
+    ):
+        store = ResultStore(root=str(tmp_path), scope_policy="session_required")
+        registry = _registry_with_big(store)
+        scope = ResultScope(tenant="tenant-a", session="session-1")
+
+        with use_result_scope(scope):
+            result_id = _extract_id(
+                registry.invoke("big", {}, execution_mode="thread").result
+            )
+            page = registry.invoke(
+                "read_result",
+                {"id": result_id, "offset": 0, "limit": 10},
+                execution_mode=execution_mode,
+            ).result
+
+        assert page == "x" * 10
+
+    def test_the_context_scope_reaches_read_result_in_a_batch(self, tmp_path):
+        store = ResultStore(root=str(tmp_path))
+        registry = _registry_with_big(store)
+        scope = ResultScope(tenant="tenant-a", session="session-1")
+
+        with use_result_scope(scope):
+            result_id = _extract_id(
+                registry.invoke("big", {}, execution_mode="thread").result
+            )
+            calls = [
+                {
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": "read_result",
+                        "arguments": json.dumps(
+                            {"id": result_id, "offset": 10, "limit": 5}
+                        ),
+                    },
+                }
+            ]
+            page = registry.execute_tool_calls(calls)["call_read"].result
+
+        assert page == "x" * 5
+
 
 class TestScopePolicy:
     def test_required_rejects_an_unscoped_write(self, tmp_path):
@@ -311,8 +356,20 @@ class TestRetention:
 
         now[0] += 9
         assert store.read(result_id) == "hello"
+        assert store.stat(result_id).last_access_at == 1009.0
         now[0] += 9
         assert store.read(result_id) == "hello"
+        assert store.stat(result_id).last_access_at == 1018.0
+
+    def test_reads_do_not_rewrite_metadata_without_an_idle_ttl(self, tmp_path):
+        now = [1000.0]
+        store = ResultStore(root=str(tmp_path), ttl=1000, clock=lambda: now[0])
+        result_id = store.put("hello")[0]
+
+        now[0] += 5
+        assert store.read(result_id) == "hello"
+
+        assert store.stat(result_id).last_access_at == 1000.0
 
     def test_a_read_past_the_end_still_extends_the_idle_ttl(self, tmp_path):
         now = [1000.0]
@@ -356,6 +413,21 @@ class TestRetention:
 
         assert store.read(result_id) == "x" * 100
 
+    def test_quota_eviction_is_global_and_scope_blind(self, tmp_path):
+        """Phase 0 documents global eviction; per-scope quotas are Phase 1."""
+        now = [1000.0]
+        store = ResultStore(root=str(tmp_path), quota=4000, clock=lambda: now[0])
+        victim_scope = ResultScope(tenant="tenant-b", session="session-9")
+        victim_id = store.put("v" * 500, scope=victim_scope)[0]
+        writer_scope = ResultScope(tenant="tenant-a", session="session-1")
+
+        for _ in range(8):
+            now[0] += 1
+            store.put("x" * 500, scope=writer_scope)
+
+        with pytest.raises(ValueError, match="unknown result id"):
+            store.read(victim_id, scope=victim_scope)
+
 
 class TestMetadata:
     def test_stat_reports_owner_content_and_digest(self, tmp_path):
@@ -394,6 +466,20 @@ class TestMetadata:
         assert info.tool_name == "lookup"
         assert info.content_type == "application/json"
         assert info.size_bytes == len(payload.encode("utf-8"))
+
+    def test_a_truncated_blob_is_reported_as_corrupt_and_swept(self, tmp_path):
+        store = ResultStore(root=str(tmp_path))
+        result_id, path = store.put("hello")
+        with open(path, "w", encoding="utf-8") as stream:
+            stream.write("he")
+
+        with pytest.raises(ValueError, match="corrupt"):
+            store.read(result_id)
+
+        assert not os.path.exists(path)
+        assert not os.path.exists(os.path.join(str(tmp_path), f"{result_id}.json"))
+        with pytest.raises(ValueError, match="unknown result id"):
+            store.stat(result_id)
 
     def test_a_write_sweeps_orphan_blobs_and_temp_files(self, tmp_path):
         store = ResultStore(root=str(tmp_path))

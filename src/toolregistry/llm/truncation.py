@@ -153,15 +153,21 @@ class ResultInfo:
 
     Attributes:
         result_id: Opaque result id.
-        path: Host path to the content blob.  Programmatic use only.
-        size_bytes: Stored content size in bytes.
-        sha256: SHA-256 digest of the stored content.
+        path: Host path to the content blob.  Programmatic use only; do not
+            serialize this field outside the process, because it exposes a
+            host path.
+        size_bytes: Stored content size in bytes.  Reads compare the blob's
+            actual size against this value and refuse a truncated record.
+        sha256: SHA-256 digest of the stored content.  Reads do not hash the
+            whole blob; use this for an explicit full verification.
         content_type: Stored content type.
         tool_name: Tool that produced the result.
         tenant: Owning tenant, or ``None`` in library mode.
         session: Owning logical session; ``None`` means tenant-shared.
         created_at: Wall-clock creation time.
-        last_access_at: Wall-clock time of the last successful read.
+        last_access_at: Wall-clock time of the last access that refreshed a
+            sliding deadline.  It stays at ``created_at`` when no
+            ``idle_ttl`` is configured.
         expires_at: Effective expiry after the TTL rules are applied.
         legacy: Whether this record predates owner metadata.
     """
@@ -248,12 +254,20 @@ class ResultStore:
     Each result is a content blob (``<id>.txt``) plus a sidecar metadata
     record (``<id>.json``).  Files live in a private directory, are created
     with mode ``0600``, and older results are evicted when the directory
-    would exceed *quota* bytes.  The result being written is retained even
-    when it alone exceeds the quota, so a write never fails for storage
-    pressure; the trade-off is that a single oversized result can leave the
-    directory above its quota.  New ids are ``res_<32 hex>`` (128 random
-    bits); legacy ``res_<12 hex>`` ids remain readable when *allow_legacy*
-    is on.
+    would exceed *quota* bytes.  Eviction is global and scope-blind: a
+    tenant that writes enough results can evict another tenant's live
+    result.  Per-tenant and per-session quotas arrive in Phase 1.  The
+    result being written is retained even when it alone exceeds the quota,
+    so a write never fails for storage pressure; the trade-off is that a
+    single oversized result can leave the directory above its quota.  New
+    ids are ``res_<32 hex>`` (128 random bits); legacy ``res_<12 hex>`` ids
+    remain readable when *allow_legacy* is on.
+
+    Each write scans the directory twice (cleanup and quota accounting), so
+    writes are O(n) in the number of stored results until a durable index
+    lands in Phase 3.  :meth:`put_result` is the extension point for
+    subclasses; :meth:`put` is the compatibility wrapper that delegates to
+    it.
 
     Args:
         root: Directory to store results in.  ``None`` creates a fresh
@@ -361,6 +375,10 @@ class ResultStore:
     ) -> ResultInfo:
         """Store *text* and return its metadata record.
 
+        This is the extension point for subclasses that add encryption,
+        redaction, or audit hooks; :meth:`put` is a compatibility wrapper
+        that delegates here.
+
         The blob is written first, then its metadata is installed with an
         atomic rename.  A crash between the two leaves an orphan blob, never
         a metadata record that points at missing bytes.
@@ -445,6 +463,12 @@ class ResultStore:
     ) -> str:
         """Return one character slice of a stored result.
 
+        A read refreshes the sliding deadline only when ``idle_ttl`` is
+        configured; with no sliding deadline the metadata is not rewritten.
+        The blob's size is checked against its metadata first, so a
+        truncated or partially restored file is reported as corrupt instead
+        of being served.
+
         Args:
             result_id: Opaque id returned by :meth:`put`.
             offset: Character offset to start at.
@@ -453,8 +477,8 @@ class ResultStore:
 
         Raises:
             ValueError: If the id is invalid or unknown, the caller is not
-                authorized, the result expired, the scope policy is not
-                satisfied, or *offset*/*limit* is invalid.
+                authorized, the result expired or is corrupt, the scope
+                policy is not satisfied, or *offset*/*limit* is invalid.
         """
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset must be a non-negative integer")
@@ -485,7 +509,8 @@ class ResultStore:
         except FileNotFoundError as exc:
             raise ValueError(f"unknown result id {result_id!r}") from exc
 
-        self._touch(result_id, record)
+        if self.idle_ttl is not None:
+            self._touch(result_id, record)
         return result
 
     def stat(
@@ -559,11 +584,38 @@ class ResultStore:
             raise ValueError(f"unknown result id {result_id!r}")
         record = self._read_metadata_locked(result_id)
         if record is not None:
+            self._verify_size_locked(result_id, path, record)
             return record
         if not self.allow_legacy:
             self._remove_locked(result_id)
             raise ValueError(f"unknown result id {result_id!r}")
         return self._legacy_record_locked(result_id, path)
+
+    def _verify_size_locked(
+        self,
+        result_id: str,
+        path: str,
+        record: Mapping[str, Any],
+    ) -> None:
+        """Refuse a blob whose size no longer matches its metadata.  Holds lock.
+
+        A truncated write, a partial restore, or a hand-edited file is
+        swept instead of being served as if intact.  The full digest is
+        recorded but not recomputed here, because hashing the whole blob on
+        every page would defeat paging; callers that need that check can
+        compare :attr:`ResultInfo.sha256` explicitly.
+        """
+        expected = record.get("size_bytes")
+        if isinstance(expected, bool) or not isinstance(expected, int):
+            return
+        try:
+            actual = os.stat(path).st_size
+        except OSError:
+            self._remove_locked(result_id)
+            raise ValueError(f"unknown result id {result_id!r}") from None
+        if actual != expected:
+            self._remove_locked(result_id)
+            raise ValueError(f"result id {result_id!r} is corrupt")
 
     def _legacy_record_locked(self, result_id: str, path: str) -> dict[str, Any]:
         """Build an in-memory record for a pre-ADR-004 blob."""
@@ -715,7 +767,12 @@ class ResultStore:
                     os.unlink(os.path.join(self.root, name))
 
     def _enforce_quota_locked(self, keep_id: str) -> None:
-        """Evict the oldest results until the directory fits.  Holds lock."""
+        """Evict older results until the directory fits.  Holds lock.
+
+        Eviction is global oldest-first and ignores scope, so one tenant's
+        writes can remove another tenant's live result.  Per-scope quotas
+        are a Phase 1 concern.
+        """
         entries: list[tuple[float, int, str]] = []
         for path in self._files():
             result_id = os.path.basename(path)[: -len(_RESULT_BLOB_SUFFIX)]

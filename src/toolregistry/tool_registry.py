@@ -30,6 +30,7 @@ from .llm.truncation import (
     ResultScopePolicy,
     ResultStore,
     current_result_scope,
+    result_scope_var,
     truncate_result,
     truncation_notice,
 )
@@ -338,6 +339,7 @@ class ToolRegistry(
         else:
             self._result_store = None
         self._result_scope_provider = result_scope_provider
+        self._builtin_read_result_tool = None
         self._think_augment = think_augment
         self._derive_output_schemas = derive_output_schemas
         self._name_sep: Literal["-", "."] = name_sep
@@ -397,11 +399,13 @@ class ToolRegistry(
                     # locks and a process pool and therefore cannot be
                     # pickled.  A thread keeps the read off the event loop
                     # without the failed pickle attempt a pool submit would
-                    # make.
+                    # make.  Dispatch also forces this tool onto the thread
+                    # backend and binds the caller's scope there.
                     natural_backend="thread",
                 ),
             )
         )
+        self._builtin_read_result_tool = self.get_tool("read_result")
 
     def read_result(
         self,
@@ -418,6 +422,11 @@ class ToolRegistry(
         per-request ``read_result`` handler, so one agent cannot read
         another agent's result.
 
+        When invoked through the tool machinery, the registry resolves the
+        caller's scope on the dispatching thread and runs the read on the
+        thread backend, even if a process backend was requested: the result
+        directory is process-local and the registry cannot be pickled.
+
         Args:
             id: Opaque result id from a truncation header (``res_<32 hex>``).
             offset: Character offset to start at.
@@ -428,8 +437,8 @@ class ToolRegistry(
 
         Raises:
             ValueError: If the id is not a valid result id, is unknown, is
-                not owned by the caller's scope, has expired, or
-                *offset*/*limit* is not a non-negative integer.
+                not owned by the caller's scope, has expired, is corrupt,
+                or *offset*/*limit* is not a non-negative integer.
             RuntimeError: If result persistence is not enabled.
         """
         if self._result_store is None:
@@ -452,6 +461,37 @@ class ToolRegistry(
         if self._result_scope_provider is not None:
             return self._result_scope_provider()
         return current_result_scope()
+
+    def _builtin_read_result_submission(
+        self, tool_obj: "Tool"
+    ) -> tuple[Any, Callable[..., Any]]:
+        """Return a thread backend and a scope-bound thunk for ``read_result``.
+
+        The tool body runs in a worker thread, which does not inherit the
+        caller's context variable.  Resolve the scope here, on the
+        dispatching thread, and bind it inside the worker so the library
+        convenience API (``use_result_scope``) and the explicit provider
+        agree.  The built-in reader is local file I/O and its callable
+        closes over the registry, so it always uses the thread backend; a
+        process submit would try to pickle the registry and its locks.
+
+        Args:
+            tool_obj: The registered built-in ``read_result`` tool.
+
+        Returns:
+            The thread backend and a zero-signature-keyword callable that
+            runs the tool with the caller's scope bound.
+        """
+        scope = self._current_result_scope()
+
+        def run_with_scope(**kwargs: Any) -> Any:
+            token = result_scope_var.set(scope)
+            try:
+                return tool_obj.run(kwargs)
+            finally:
+                result_scope_var.reset(token)
+
+        return self._thread_backend, run_with_scope
 
     @property
     def name_sep(self) -> Literal["-", "."]:
@@ -1212,7 +1252,11 @@ class ToolRegistry(
 
         # Access control raises here (raw path), matching legacy invoke().
         tool_obj = self._check_tool_access(tool_name, kwargs, invocation_id)
-        backend = self._resolve_backend(tool_obj, execution_mode)
+        if tool_obj is self._builtin_read_result_tool:
+            backend, submit_fn = self._builtin_read_result_submission(tool_obj)
+        else:
+            backend = self._resolve_backend(tool_obj, execution_mode)
+            submit_fn = lambda **kw: tool_obj.run(kw)  # noqa: E731
         clean_kwargs = self._clean_kwargs(kwargs)
         per_call_timeout = tool_obj.metadata.timeout if tool_obj.metadata else None
 
@@ -1222,7 +1266,7 @@ class ToolRegistry(
         with warning_collector("toolregistry") as wc:
             try:
                 handle = backend.submit(
-                    lambda **kw: tool_obj.run(kw),
+                    submit_fn,
                     clean_kwargs,
                     execution_id=invocation_id,
                     timeout=per_call_timeout,
@@ -1296,20 +1340,25 @@ class ToolRegistry(
             )
 
         tool_obj = prepared
-        backend = self._resolve_backend(tool_obj, execution_mode)
+        if tool_obj is self._builtin_read_result_tool:
+            backend, submit_fn = self._builtin_read_result_submission(tool_obj)
+        else:
+            backend = self._resolve_backend(tool_obj, execution_mode)
+            # Submit tool_obj.run so the sync path is forced regardless of
+            # any ambient event loop (BaseToolWrapper.__call__ would
+            # auto-select async based on a running loop).
+            submit_fn = lambda **kw: tool_obj.run(kw)  # noqa: E731
         clean_kwargs = self._clean_kwargs(kwargs)
         per_call_timeout = tool_obj.metadata.timeout if tool_obj.metadata else None
 
         from .admin.execution_log import warning_collector
 
         start = time.perf_counter()
-        # Submit tool_obj.run so the sync path is forced regardless of any
-        # ambient event loop (BaseToolWrapper.__call__ would auto-select
-        # async based on a running loop).  The backend calls fn(**kwargs),
-        # so the thunk collects them back into the dict run() expects.
+        # The backend calls fn(**kwargs), so the thunk collects them back
+        # into the dict run() expects.
         with warning_collector("toolregistry") as wc:
             handle = backend.submit(
-                lambda **kw: tool_obj.run(kw),
+                submit_fn,
                 clean_kwargs,
                 execution_id=invocation_id,
                 timeout=per_call_timeout,
@@ -1448,7 +1497,17 @@ class ToolRegistry(
             )
 
         tool_obj = prepared
-        backend = self._resolve_backend(tool_obj, execution_mode, async_caller=True)
+        if tool_obj is self._builtin_read_result_tool:
+            backend, submit_fn = self._builtin_read_result_submission(tool_obj)
+        else:
+            backend = self._resolve_backend(tool_obj, execution_mode, async_caller=True)
+            # Inline backend: pass tool.arun so result_async() can await the
+            # coroutine natively on the caller's loop.  Pool backends: pass
+            # tool.run (sync) for execution in the worker thread/process.
+            if backend is self._inline_backend:
+                submit_fn = lambda **kw: tool_obj.arun(kw)  # noqa: E731
+            else:
+                submit_fn = lambda **kw: tool_obj.run(kw)  # noqa: E731
         clean_kwargs = self._clean_kwargs(kwargs)
         per_call_timeout = tool_obj.metadata.timeout if tool_obj.metadata else None
 
@@ -1458,14 +1517,6 @@ class ToolRegistry(
         outcome: Any
         with warning_collector("toolregistry") as wc:
             try:
-                # Inline backend: pass tool.arun so result_async() can
-                # await the coroutine natively on the caller's loop.
-                # Pool backends: pass tool.run (sync) for execution in
-                # the worker thread/process.
-                if backend is self._inline_backend:
-                    submit_fn = lambda **kw: tool_obj.arun(kw)  # noqa: E731
-                else:
-                    submit_fn = lambda **kw: tool_obj.run(kw)  # noqa: E731
                 handle = backend.submit(
                     submit_fn,
                     clean_kwargs,
@@ -1847,7 +1898,9 @@ class ToolRegistry(
             tool_obj.metadata.timeout if tool_obj and tool_obj.metadata else None
         )
 
-        if backend is None:
+        if tool_obj is not None and tool_obj is self._builtin_read_result_tool:
+            backend, callable_func = self._builtin_read_result_submission(tool_obj)
+        elif backend is None:
             backend = self._resolve_backend(
                 tool_obj, execution_mode, default=self._execution_mode
             )
@@ -2092,19 +2145,25 @@ class ToolRegistry(
 
         clean_kwargs = self._clean_kwargs(call_arguments.get(tc.id, {}))
         per_call_timeout = tool_obj.metadata.timeout if tool_obj.metadata else None
-        backend = self._resolve_backend(
-            tool_obj, execution_mode, default=self._execution_mode, async_caller=True
-        )
+        if tool_obj is self._builtin_read_result_tool:
+            backend, submit_fn = self._builtin_read_result_submission(tool_obj)
+        else:
+            backend = self._resolve_backend(
+                tool_obj,
+                execution_mode,
+                default=self._execution_mode,
+                async_caller=True,
+            )
+            # Inline: pass tool.arun (async) so result_async can await.
+            # Pool: pass tool.run (sync) for worker execution.
+            # Bind tool_obj as default arg to avoid closure-over-loop.
+            if backend is self._inline_backend:
+                submit_fn = lambda _t=tool_obj, **kw: _t.arun(kw)  # noqa: E731
+            else:
+                submit_fn = lambda _t=tool_obj, **kw: _t.run(kw)  # noqa: E731
 
         with warning_collector("toolregistry") as wc:
             try:
-                # Inline: pass tool.arun (async) so result_async can await.
-                # Pool: pass tool.run (sync) for worker execution.
-                # Bind tool_obj as default arg to avoid closure-over-loop.
-                if backend is self._inline_backend:
-                    submit_fn = lambda _t=tool_obj, **kw: _t.arun(kw)  # noqa: E731
-                else:
-                    submit_fn = lambda _t=tool_obj, **kw: _t.run(kw)  # noqa: E731
                 handle = backend.submit(
                     submit_fn,
                     clean_kwargs,
