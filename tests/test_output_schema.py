@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import sys
+from collections import Counter, OrderedDict
 from collections.abc import (
     Collection,
     Iterable,
@@ -244,6 +245,25 @@ def returns_mutable_mapping() -> MutableMapping[str, bool]:
     return {}
 
 
+class MyDict(dict):
+    """A bare concrete mapping subclass."""
+
+
+def returns_ordered_dict() -> OrderedDict[str, int]:
+    """Return a parameterized mapping subclass."""
+    return OrderedDict()
+
+
+def returns_counter() -> Counter[str]:
+    """Return a mapping subclass parameterized with only a key type."""
+    return Counter()
+
+
+def returns_custom_dict() -> MyDict:
+    """Return a bare concrete mapping subclass."""
+    return MyDict()
+
+
 def returns_sequence() -> Sequence[int]:
     """Return an abstract sequence."""
     return []
@@ -450,6 +470,12 @@ def test_nested_dataclass_list() -> None:
             returns_mutable_mapping,
             {"type": "object", "additionalProperties": {"type": "boolean"}},
         ),
+        (
+            returns_ordered_dict,
+            {"type": "object", "additionalProperties": {"type": "integer"}},
+        ),
+        (returns_counter, {"type": "object"}),
+        (returns_custom_dict, {"type": "object"}),
         (returns_sequence, {"type": "array", "items": {"type": "integer"}}),
         (returns_iterable, {"type": "array", "items": {"type": "string"}}),
         (returns_collection, {"type": "array", "items": {"type": "number"}}),

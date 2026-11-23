@@ -471,14 +471,22 @@ def _dict_schema(
     localns: Mapping[str, Any] | None,
     stack: frozenset[Any],
 ) -> dict[str, Any] | None:
-    """Convert ``dict[str, T]`` into an open object schema."""
+    """Convert ``dict[str, T]`` into an open object schema.
+
+    A mapping subclass may be parameterized with only a key type
+    (``Counter[str]``).  Its value shape is unknown, so it publishes the same
+    open object as the bare class rather than nothing.
+    """
     if not args:
+        return {"type": "object"}
+    key_type = args[0]
+    if _unwrap(key_type) is not str:
+        return None
+    if len(args) == 1:
         return {"type": "object"}
     if len(args) != 2:
         return None
-    key_type, value_type = args
-    if _unwrap(key_type) is not str:
-        return None
+    value_type = args[1]
     value_schema = _convert(_unwrap(value_type), localns, stack)
     if value_schema is None:
         return None
@@ -524,6 +532,12 @@ def _container_schema(
     if origin is list or origin in (Sequence, Iterable, Collection):
         return _list_schema(args, localns, stack)
     if origin is dict or origin in (Mapping, MutableMapping):
+        return _dict_schema(args, localns, stack)
+    # A parameterized mapping subclass (``OrderedDict[str, int]``,
+    # ``Counter[str]``) carries the class itself as its origin.  Route it
+    # through the same rule as the abc forms so a bare and a parameterized
+    # use of one class cannot publish different shapes.
+    if isinstance(origin, type) and issubclass(origin, Mapping):
         return _dict_schema(args, localns, stack)
     if origin is tuple:
         return _tuple_schema(args, localns, stack)
