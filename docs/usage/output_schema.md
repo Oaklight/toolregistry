@@ -20,7 +20,7 @@ registry = ToolRegistry(derive_output_schemas=True)
 
 通过 `registry.register()` 注册的每个函数都会以
 `Tool.from_function(..., derive_output_schema=True)` 转换。类注册与可调用
-覆盖走同一条路径。
+覆盖走同一条路径。可调用实例会从 `type(obj).__call__` 的返回注解推导。
 
 只为一个工具开启时，直接构造 `Tool`：
 
