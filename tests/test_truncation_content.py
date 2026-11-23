@@ -244,10 +244,10 @@ class TestContentBlocks:
             {"type": "text", "text": "C" * 100},
         ]
 
-        result = registry._truncate_content_blocks(blocks, 1000, "tool")
+        result = registry._truncate_content_blocks(blocks, 400, "tool")
 
         texts = [len(block["text"]) for block in result if block["type"] == "text"]
-        assert sum(texts) <= 1000
+        assert sum(texts) <= 400
         assert texts[0] > texts[1]
         assert texts[0] > texts[2]
         assert any(block["type"] == "image" for block in result)
