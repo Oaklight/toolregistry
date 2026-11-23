@@ -1198,12 +1198,14 @@ class Tool:
         sep: NameSeparator = "-",
         *,
         localns: Mapping[str, Any] | None = None,
+        derive_output_schema: bool = False,
     ) -> "Tool":
         """Factory method to create Tool from callable.
 
         Automatically:
             - Extracts function metadata
             - Generates parameter schema
+            - Optionally derives the output schema from the return annotation
             - Handles async/sync detection
 
         Args:
@@ -1226,6 +1228,13 @@ class Tool:
                 an annotation that still cannot resolve keeps the existing
                 fallback warning and ``metadata.unresolved_parameters``
                 entry.
+            derive_output_schema: Derive a JSON Schema from the return
+                annotation and store it in
+                ``metadata.extra["output_schema"]`` when the tool does not
+                already declare one.  An annotation that cannot be resolved
+                to a complete schema adds nothing, so it never publishes an
+                empty contract.  Defaults to ``False``; the registry switch
+                ``derive_output_schemas`` forwards its value here.
 
         Returns:
             Tool: Configured Tool instance.
@@ -1287,6 +1296,18 @@ class Tool:
             # unconstrained parameters instead of publishing the empty
             # schema as if it were the contract (#466).
             metadata = dataclasses.replace(metadata, unresolved_parameters=degraded)
+        if derive_output_schema and "output_schema" not in metadata.extra:
+            # An explicit declaration always wins: presence of the key is
+            # enough, even when its value is falsy.  A derivation that cannot
+            # resolve the whole return shape adds nothing.
+            from ._output_schema import derive_output_schema as _derive_output_schema
+
+            derived = _derive_output_schema(func, localns=localns)
+            if derived is not None:
+                metadata = dataclasses.replace(
+                    metadata,
+                    extra={**metadata.extra, "output_schema": derived},
+                )
         # Wrap bare functions so Tool.callable is always a BaseToolWrapper.
         if not isinstance(func, BaseToolWrapper):
             param_names = list(inspect.signature(func).parameters.keys())
