@@ -101,6 +101,13 @@ class TightRedeclare(LooseBase):
     b: int
 
 
+class Adder:
+    """Callable instance used to check ``type(func).__call__`` derivation."""
+
+    def __call__(self, a: int, b: int) -> int:
+        return a + b
+
+
 @dataclass
 class Point:
     x: int
@@ -538,6 +545,21 @@ def test_explicit_output_schema_is_never_overridden() -> None:
     )
 
     assert tool.metadata.extra["output_schema"] == declared
+
+
+def test_callable_instance_derives_from_dunder_call() -> None:
+    """A callable instance uses its ``__call__`` return annotation."""
+    assert derive_output_schema(Adder()) == {"type": "integer"}
+
+
+def test_registry_switch_derives_for_callable_instance() -> None:
+    """The registry switch reaches a registered callable instance."""
+    registry = ToolRegistry(derive_output_schemas=True)
+    registry.register(Adder(), name="adder")
+
+    tool = registry.get_tool("adder")
+    assert tool is not None
+    assert tool.metadata.extra["output_schema"] == {"type": "integer"}
 
 
 def test_registry_switch_off_keeps_no_schema() -> None:

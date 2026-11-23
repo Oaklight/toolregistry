@@ -566,7 +566,8 @@ def derive_output_schema(
 
     Args:
         func: A callable whose return annotation describes the value the tool
-            produces.
+            produces.  For a callable instance, the annotation is read from
+            ``type(func).__call__`` when introspection of the instance fails.
         localns: Names visible only to the function that defined the
             annotation, typically ``locals()`` from that function.  Forward
             references that cannot be resolved through the function's globals
@@ -584,6 +585,10 @@ def derive_output_schema(
     if not callable(func):
         return None
     hints = _type_hints(func, localns)
+    if hints is None and not (
+        inspect.isfunction(func) or inspect.ismethod(func) or inspect.isclass(func)
+    ):
+        hints = _type_hints(type(func).__call__, localns)
     if hints is None:
         return None
     annotation = hints.get("return", inspect.Signature.empty)
