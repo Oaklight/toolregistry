@@ -4,27 +4,27 @@
   "modules": {
     "frontmatter": {
       "files": {
-        "frontmatter.py": "d7b3fe6ee55486fe17f63afe17a87453a61be3bb4c530c6d185c706c6eaddb92"
+        "frontmatter.py": "916dd3b26697bbb84a02fee0b0fe54b775ae2744a96b3dd0bdf3837af8b5474b"
       },
-      "requested": false,
-      "upstream_hash": "9e7b261e344ab14a4561fb16a047bf63e215256e2cc817df8fa2cdced6ff3a4c",
-      "version": "0.3.1"
+      "requested": true,
+      "upstream_hash": "d05035b8d2edeb47c1007a8e4fba6ae3a74fab0bf8630042f228e45550bb645f",
+      "version": "0.3.0"
     },
     "httpclient": {
       "files": {
-        "httpclient.py": "bdb240c35c5a46aaa31ac64554c81fc95055b39155a1ed464818ae176d80cebc"
+        "httpclient.py": "5f91aa2c588bf6ce8aad6acf238e45457c6486dc0bf18f8b14661cdb90928488"
       },
       "requested": true,
-      "upstream_hash": "5b68de91c57cc980766bca97cd2712ec87f89dfaa500377201b79cc437dbbc74",
-      "version": "0.7.3"
+      "upstream_hash": "410166bee26d34f4d875e115fc3a567c74d8bef7405107479a15185582346d8d",
+      "version": "0.7.4"
     },
     "httpserver": {
       "files": {
-        "httpserver.py": "8f2d76e03801a7638e09116f44bddc492391baa7837a926240c3bd30f7a83130"
+        "httpserver.py": "5c9b0e413aeff0d4b967f09aad6893bd11b0827914f62882d14dbecca307da6a"
       },
       "requested": true,
-      "upstream_hash": "309a3fd37d99bc934ac6d589bf7ec0c7a6171b0bdc13da51fa2420ce78fcf472",
-      "version": "0.7.2"
+      "upstream_hash": "25b9cae3fa9bbf2daa265b27373d6ed1b043d86a53e2dfcfe39bc991f1b1dfa1",
+      "version": "0.8.0"
     },
     "jsonschema": {
       "files": {
@@ -44,11 +44,11 @@
     },
     "skills": {
       "files": {
-        "skills.py": "692c2020902007b3ff62cf25dbd44aa42d3bdf5f8f9e6088e562100b4d184a4d"
+        "skills.py": "d63721b90891e58cf0d85639a08438fbeb25096669e9d4734647d59f7f0489a8"
       },
       "requested": true,
-      "upstream_hash": "7b9387235f4225695c19f1924576e16cd2cd3b87a0fcea76a7b2279aa90e38bc",
-      "version": "0.5.1"
+      "upstream_hash": "0363eb438d5bf078a90747b680645e99ae01370c7f7bf8f3745a476d91499250",
+      "version": "0.4.3"
     },
     "sparse_search": {
       "files": {
@@ -84,7 +84,7 @@
     }
   },
   "source": {
-    "ref": "879100d489fd91657c3ee31c569ec39bb0034bd8",
+    "ref": "v2026.11.20",
     "repo": "Oaklight/zerodep"
   }
 }
