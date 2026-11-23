@@ -134,7 +134,7 @@ Simply cuts off the result at `max_size` characters. Use when only the beginning
 When truncation occurs, the result sent to the LLM includes a metadata header:
 
 ```
-[Truncated: 20000 chars -> 2000 chars | full output: res_0123456789ab (read it with read_result)]
+[Truncated: 20000 chars -> 2000 chars | full output: res_0123456789abcdef0123456789abcdef (read it with read_result)]
 First part of the output...
 ... (truncated 18000 chars) ...
 ...last part of the output
@@ -156,13 +156,59 @@ metadata rides in the document itself (the counts depend on what was pruned):
 Persistence is opt-in. `ToolRegistry(persist_large_results=True)` stores each
 truncated full result in a private per-run directory created with mode `0700`;
 files are created with mode `0600`. The header carries an opaque id
-(`res_<12 hex>`), and the built-in `read_result(id, offset=0, limit=8000)` tool
-pages through the stored text. A result expires after 24 hours, and the
-directory is capped at 64 MiB with the oldest file evicted first; the file just
-written is never evicted, even when it alone exceeds the quota.
+(`res_<32 hex>`, 128 random bits), and the built-in
+`read_result(id, offset=0, limit=8000)` tool pages through the stored text.
+A result expires after 24 hours, and the directory is capped at 64 MiB with the
+oldest file evicted first; the file just written is never evicted, even when it
+alone exceeds the quota.
 
 Without the flag nothing is written to disk: a truncated result is only the
 truncated text.
+
+### Retention settings
+
+```python
+registry = ToolRegistry(
+    persist_large_results=True,
+    result_ttl_seconds=60 * 60,        # hard expiry, measured from creation
+    result_idle_ttl_seconds=10 * 60,   # sliding expiry, refreshed by reads
+    result_quota_bytes=32 * 1024 * 1024,
+)
+```
+
+The hard TTL is absolute: reads never extend it. The idle TTL applies only when
+set, and reads extend it; `stat()` does not. The effective expiry is the
+earlier of the two. `result_store=ResultStore(...)` injects a prepared store
+instead; supplying a store also enables persistence when
+`persist_large_results` is left at `False`, and the store's own retention
+settings win.
+
+### Ownership scope
+
+`ResultStore` can attach an owner to every result. A `ResultScope(tenant,
+session)` identifies the API key or deployment tenant and the logical agent
+session; a scope with `session=None` is tenant-shared, and a scope with a
+session is private to that session. Reads check the caller's scope, so one
+agent cannot read another agent's result even when it learns the id.
+
+Library callers stay unscoped:
+
+```python
+from toolregistry.llm.truncation import ResultScope, use_result_scope
+
+with use_result_scope(ResultScope(tenant="tenant-a", session="session-1")):
+    ...  # results written here carry that scope
+```
+
+Server adapters should pass the scope explicitly, either through
+`ToolRegistry(result_scope_provider=...)` or per request, because executor
+threads and processes do not carry a context variable. `result_scope_policy`
+controls the contract: `"optional"` (default) accepts unscoped writes,
+`"required"` needs any scope, and `"session_required"` needs a session. A
+missing scope under a required policy raises instead of writing a public
+result. Pre-ADR-004 `res_<12 hex>` files carry no owner metadata and are denied
+by default; `ResultStore(allow_legacy=True)` keeps them readable for an
+unscoped caller.
 
 ## Programmatic Access
 
@@ -187,7 +233,7 @@ result = truncate_result(
 
 print(result.truncated)       # True
 print(result.original_size)   # 20000
-print(result.result_id)       # "res_0123456789ab"
+print(result.result_id)       # "res_0123456789abcdef0123456789abcdef"
 print(result.full_path)       # host path; programmatic use only
 print(result.content)         # truncated content
 print(str(result))            # header names the id, never the path
@@ -196,9 +242,14 @@ print(str(result))            # header names the id, never the path
 `truncate_result` applies the same content-aware rules, and `CHARS_PER_TOKEN`
 is exported for callers that convert a token budget themselves. `persist=True`
 without a `store` uses the process-wide `default_result_store()`; pass your own
-`ResultStore` to choose the directory, TTL and quota. A registry's built-in
-`read_result` reads only results stored by that registry, so a direct
-`truncate_result` call must be read back through the same store you passed it.
+`ResultStore` to choose the directory, TTL and quota, and pass `scope=` when the
+result belongs to a tenant or session. The `ResultStore` API also exposes
+`put_result()`, which returns a `ResultInfo` with the id, size, SHA-256,
+content type, tool name, owner, and timestamps, and `stat(result_id,
+scope=...)`, which reads that metadata without extending the idle TTL. A
+registry's built-in `read_result` reads only results stored by that registry,
+so a direct `truncate_result` call must be read back through the same store you
+passed it.
 
 ### TruncatedResult Fields
 
