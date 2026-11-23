@@ -49,15 +49,24 @@ registry.register(
 
 ### Registry-Wide Default
 
-Set a default limit for all tools via `ToolRegistry`:
+A registry without an explicit limit applies
+`toolregistry.llm.truncation.DEFAULT_MAX_RESULT_SIZE`: 64,000 characters,
+roughly 16k tokens at the documented estimate. Pass `None` to restore the
+unlimited behaviour of earlier releases:
 
 ```python
 from toolregistry import ToolRegistry
 
+# Explicit larger or smaller default
 registry = ToolRegistry(default_max_result_size=5000)
+
+# No default cap: only per-tool limits apply
+registry = ToolRegistry(default_max_result_size=None)
 ```
 
-Per-tool `max_result_size` takes precedence over the registry default. Tools with `max_result_size=None` (the default) have no limit unless the registry default is set.
+Per-tool `max_result_size` takes precedence over the registry default. A tool
+that leaves `max_result_size` at `None` uses the registry default, which is
+64,000 characters unless changed.
 
 ### Token Budgets
 
@@ -75,7 +84,9 @@ token (`toolregistry.llm.truncation.CHARS_PER_TOKEN`). This is an
 order-of-magnitude guard, not a tokenizer; use `max_result_size` when the cut
 has to be exact. A tool-level value overrides the registry default for that
 field, and when both a character and a token limit apply, the smaller one
-wins.
+wins. The default 64,000-character cap is a character limit, so a token budget
+above 16k has no additional effect unless you raise or disable the default
+character cap.
 
 ## Truncation Strategies
 
