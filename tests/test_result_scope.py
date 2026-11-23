@@ -481,6 +481,34 @@ class TestMetadata:
         with pytest.raises(ValueError, match="unknown result id"):
             store.stat(result_id)
 
+    def test_a_denied_read_of_a_corrupt_record_does_not_leak_or_delete_it(
+        self, tmp_path
+    ):
+        store = ResultStore(root=str(tmp_path))
+        owner = ResultScope(tenant="tenant-a", session="session-1")
+        other = ResultScope(tenant="tenant-b", session="session-2")
+        info = store.put_result("secret payload", scope=owner)
+        with open(info.path, "w", encoding="utf-8") as stream:
+            stream.write("secret")
+
+        with pytest.raises(ValueError, match="unknown result id"):
+            store.read(info.result_id, scope=other)
+        with pytest.raises(ValueError, match="unknown result id"):
+            store.stat(info.result_id, scope=other)
+
+        assert os.path.exists(info.path)
+        assert os.path.exists(os.path.join(str(tmp_path), f"{info.result_id}.json"))
+        with pytest.raises(ValueError, match="corrupt"):
+            store.read(info.result_id, scope=owner)
+
+    def test_crlf_is_not_normalized_when_paging(self, tmp_path):
+        store = ResultStore(root=str(tmp_path))
+        text = "one\r\ntwo"
+        result_id = store.put(text)[0]
+
+        assert store.read(result_id, offset=0, limit=9) == text
+        assert store.read(result_id, offset=5, limit=3) == "two"
+
     def test_a_write_sweeps_orphan_blobs_and_temp_files(self, tmp_path):
         store = ResultStore(root=str(tmp_path))
         orphan_id, orphan_path = _legacy_blob(tmp_path, "orphan", char="b")
