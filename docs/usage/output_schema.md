@@ -64,7 +64,7 @@ tool = Tool.from_function(
 - 抽象容器：`Mapping[str, T]`、`MutableMapping[str, T]`、`Sequence[T]`、
   `Iterable[T]` 与 `Collection[T]`
 - `Mapping` 类及其子类，裸用或参数化均可；`Counter[str]` 这类单参数形式
-  发布开放对象，因为其值的形状未知
+  发布开放对象，因为注解未提供值类型
 - `Literal[...]` 与 `Enum` 子类
 - `Optional[...]` / `T | None`，表示为可空；裸 `None` 返回值不发布 schema
 - `TypedDict`，包括 `total=False` 与 `NotRequired`
