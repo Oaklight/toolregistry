@@ -467,9 +467,10 @@ class ResultStore:
 
         A read refreshes the sliding deadline only when ``idle_ttl`` is
         configured; with no sliding deadline the metadata is not rewritten.
-        The blob's size is checked against its metadata first, so a
-        truncated or partially restored file is reported as corrupt instead
-        of being served.
+        The blob's size is checked against its metadata after authorization,
+        so a truncated or partially restored file is reported as corrupt
+        instead of being served.  Offsets count stored characters with no
+        newline translation, so ``\\r`` in CRLF content is one character.
 
         Args:
             result_id: Opaque id returned by :meth:`put`.
@@ -491,12 +492,13 @@ class ResultStore:
         with self._lock:
             record = self._record_locked(result_id, path)
             self._authorize_locked(record, resolved_scope)
+            self._verify_size_locked(result_id, path, record)
             if self._is_expired(record):
                 self._remove_locked(result_id)
                 raise ValueError(f"result id {result_id!r} has expired")
 
         try:
-            with open(path, encoding="utf-8") as stream:
+            with open(path, encoding="utf-8", newline="") as stream:
                 remaining = offset
                 while remaining > 0:
                     skipped = len(stream.read(min(remaining, _READ_CHUNK)))
@@ -540,6 +542,7 @@ class ResultStore:
         with self._lock:
             record = self._record_locked(result_id, path)
             self._authorize_locked(record, resolved_scope)
+            self._verify_size_locked(result_id, path, record)
             if self._is_expired(record):
                 self._remove_locked(result_id)
                 raise ValueError(f"result id {result_id!r} has expired")
@@ -580,15 +583,22 @@ class ResultStore:
             raise ValueError(f"unknown result id {result_id!r}")
 
     def _record_locked(self, result_id: str, path: str) -> dict[str, Any]:
-        """Return the metadata record, or deny/sweep a legacy record."""
+        """Return the metadata record, or deny/sweep a legacy record.
+
+        The caller authorizes the returned record before checking its size,
+        so a denial looks identical to an unknown id and never mutates
+        another scope's data.
+        """
         if not os.path.exists(path):
             self._remove_locked(result_id)
             raise ValueError(f"unknown result id {result_id!r}")
         record = self._read_metadata_locked(result_id)
         if record is not None:
-            self._verify_size_locked(result_id, path, record)
             return record
         if not self.allow_legacy:
+            # A legacy blob carries no owner metadata, so sweeping it here
+            # cannot destroy another scope's record; authorization runs
+            # afterwards on the returned record.
             self._remove_locked(result_id)
             raise ValueError(f"unknown result id {result_id!r}")
         return self._legacy_record_locked(result_id, path)
@@ -641,7 +651,7 @@ class ResultStore:
         """Return a metadata record, or ``None`` when it is absent/corrupt."""
         path = self._metadata_path(result_id)
         try:
-            with open(path, encoding="utf-8") as stream:
+            with open(path, encoding="utf-8", newline="") as stream:
                 record = json.load(stream)
         except (OSError, ValueError):
             return None
