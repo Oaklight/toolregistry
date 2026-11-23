@@ -49,11 +49,26 @@ class ResultScope:
 
 - In library mode the scope is `None`.  The store is a process-local trust
   domain, and a single process is assumed not to be hostile to itself.
-- In server mode the adapter sets the scope for every tool call.  An unset
-  scope in server mode is a configuration error, not "public".
-- The scope travels in a `ContextVar` so `_finalize_result()`,
-  `truncate_result()`, and the `read_result` tool can see it without changing
-  every tool signature.
+- Server bootstrap sets `result_scope_policy="required"`.  A provider that
+  returns `None` under that policy raises; it never becomes "public".  Library
+  mode uses the default `"optional"` policy.
+- Scope is an explicit argument on every store call.  `_finalize_result()`
+  resolves it in the caller and passes `scope=`.  A `ContextVar` is only an
+  in-process convenience for library callers; it is not the enforcement
+  mechanism.
+- Executor backends do not carry caller context: the thread pool submits
+  without `copy_context()`, and the process pool cannot cross a context
+  variable at all.  A tool body that needs the store must receive a
+  serializable scope through `ExecutionContext` or an explicit parameter.
+  Reading the context variable inside a pooled tool reads `None`.
+- The registry-level `read_result` tool is the library fallback.  Server
+  adapters bind a per-request handler that closes over the caller's scope:
+  MCP uses the existing `handler_factory`, and OpenAPI calls a scope-aware
+  handler directly.  The public schema stays `read_result(id, offset, limit)`.
+- `default_result_store()`, the process-wide singleton used by
+  `truncate_result(persist=True)`, is a second store.  It must use the same
+  scope API.  In required mode an unscoped write through it is refused, and
+  server paths must not use it without an explicit scope.
 
 ### 2. Separate logical agent sessions from transport sessions
 
@@ -72,9 +87,15 @@ state           active / ended / expired
 - An MCP transport session maps to one logical session when it is created.
 - Reconnects may resume a logical session with a signed session token; a new
   transport session without that token creates a new logical session.
-- OpenAPI is stateless.  It needs a client-supplied `X-Agent-Session` header
-  or a server-issued session token that is bound to the principal.  Without
-  one, the safest default is tenant scope only, documented as such.
+- OpenAPI is stateless.  The caller obtains a server-issued, signed,
+  principal-bound, expiring token from `POST /sessions`.  `X-Agent-Session`
+  may be sent as a client-side label, but a bare header is never identity and
+  never part of authorization.  Without a valid token the caller gets tenant
+  scope only, or is refused when `result_scope_policy="required"`.
+- The trust assumption is one operator and many agents.  The store runs under
+  one OS user and the server process can read every file, so filesystem
+  permissions are not a tenant boundary.  Hosted multi-customer deployments
+  need per-tenant encryption in Phase 1, not only Phase 3.
 
 ### 3. Persist ownership metadata with every result
 
@@ -96,6 +117,11 @@ The smallest viable implementation is a sidecar JSON file or a SQLite index
 next to the blobs.  A SQLite index is preferred once multi-process or admin
 listing is required.
 
+Write order is blob first, then metadata with an atomic rename.  A crash
+between the two leaves an orphan blob, never a record that points at missing
+bytes.  The orphan sweep uses the recorded `sha256` and runs before quota
+accounting.
+
 ### 4. Authorization check at read time
 
 `read_result(id, offset, limit)` succeeds only when:
@@ -109,6 +135,15 @@ tool from becoming an existence oracle.
 
 An id is a locator, not a credential.  Learning an id from a log, a shared
 transcript, or another agent must not grant access.
+
+An operator is an override, not a scope key.  The stored record always names a
+real tenant and session, and an operator read is audited.  Pre-upgrade files
+carry no owner metadata, so `read` denies them by default; an operator can
+open them only through the explicit override.
+
+A denial audit entry records the principal, tool, reason, and whether the id
+existed.  It never records content.  An operator read records the same fields
+plus the override that allowed it.
 
 ### 5. TTL is a policy, not a disconnect event
 
@@ -132,6 +167,11 @@ expires_at = min(
   cannot retain data forever by reading it.
 - Long-running agents can raise `hard_ttl` and renew a session lease.  They
   cannot opt out of a deployment-wide maximum.
+- Terms that do not exist for a live session, such as `session_end` and
+  `revoked_at`, are omitted from the `min()`; they are not passed as `None`.
+- Resume must happen before the grace expires, using the signed session token.
+  A disconnect sets a non-terminal `session_end`; an explicit revoke sets a
+  terminal `revoked_at` that resume does not clear.
 
 ### 6. Quotas are per scope plus a global cap
 
@@ -139,7 +179,11 @@ expires_at = min(
 - A global cap protects the host.
 - Exceeding a tenant quota evicts that tenant's oldest results only.
 - Exceeding the global cap evicts expired results first, then the oldest
-  results of the tenant that triggered the write, then fails the write.
+  results of the tenant that triggered the write.
+- If the triggering tenant cannot free enough space, the write is not
+  persisted.  The tool call still returns its truncated content without a
+  `res_` handle, plus one warning.  Storage pressure never fails a tool call.
+  The per-session quota has the same observable outcome.
 - A write never silently deletes another live tenant's result.
 
 ### 7. Explicit sharing is a capability, not ownership
@@ -147,13 +191,21 @@ expires_at = min(
 Default sharing is none.  To share one result, mint a capability:
 
 ```text
-cap_<opaque> = HMAC(server_key, result_id | audience | permissions | expiry)
+cap_<opaque> = HMAC-SHA256(tenant_key, canonical_fields)
+canonical_fields = length-prefixed {result_id, audience, permissions, expiry}
 ```
 
+- Verify with `hmac.compare_digest`.  Do not concatenate bare fields; a
+  length-prefixed or canonical-JSON encoding prevents boundary ambiguity.
+- `tenant_key` is derived from the deployment key and the tenant id.  Key
+  rotation keeps the previous key valid for an overlap window and records
+  which key minted each capability.  A capability minted before a rotation
+  remains valid only until its own expiry and the overlap window ends.
 - The capability is unguessable, audience-bound, expiring, and revocable
   through a short TTL or a revocation list.
 - A capability grants read access to one result.  It does not transfer
-  ownership and cannot be reused for other results.
+  ownership, cannot be reused for other results, and cannot be re-shared
+  downstream.
 - Sharing is audited.
 
 ### 8. Core API shape
@@ -182,12 +234,15 @@ ToolRegistry(
     result_idle_ttl_seconds=60 * 60,
     result_quota_bytes=64 * 1024 * 1024,
     result_scope_provider=None,  # callable returning ResultScope | None
+    result_scope_policy="optional",  # "required" in server mode
 )
 ```
 
-`read_result` keeps its current schema.  It resolves the scope from the
-context variable or provider.  It never accepts an owner, tenant, or session
-argument.
+`read_result` keeps its current schema.  It takes `id`, `offset`, and `limit`;
+it takes no owner, tenant, or session argument.  The registry-level
+registration is for library mode.  In server mode the adapter binds a handler
+that closes over the resolved scope, so the tool never depends on ambient
+state that a thread or process backend would drop.
 
 ## Consequences
 
@@ -198,7 +253,13 @@ argument.
 - Stored metadata grows, so an index and garbage collector become necessary.
 - Result ids become longer and the truncation notice should name the paging
   hint, size, and expiry.
+- Existing `res_<12 hex>` ids keep working only while Phase 0 accepts both
+  widths.  Pre-upgrade files have no owner metadata and deny by default.
 - Existing cross-session reads stop working.  This is intentional.
+- A quota failure degrades to truncated output without a handle.  It never
+  turns into a failed tool call.
+- OpenAPI callers need a server-issued session token for session isolation.
+  A caller that sends only `X-Agent-Session` gets tenant scope.
 - If tenants share one OS user, filesystem permissions alone are not
   isolation.  Mutually untrusted tenants need per-tenant encryption or
   separate processes.
@@ -209,12 +270,23 @@ argument.
 
 Goal: make the store scope-aware without changing default behavior.
 
-- Add `ResultScope`, the context variable, and the scope context manager.
+- Add `ResultScope`, the optional context variable, and the scope context
+  manager.  Keep explicit `scope=` as the enforcement path.
+- Add `result_scope_policy="optional"`; make `"required"` raise on a missing
+  scope.
 - Add owner metadata, 128-bit ids, `stat()`, and configurable TTL/quota.
+- Widen `_RESULT_ID_PATTERN` to accept 12 and 32 hex characters in Phase 0.
+  New writes use 32 hex.  Pre-upgrade files without metadata deny by default
+  and are swept or migrated explicitly, so they cannot leak forever.
 - Add `result_store` and retention settings to `ToolRegistry`.
-- Make `read_result` resolve a scope when one is set; keep current behavior
-  when it is not.
-- Add tests for scope matching, id entropy, TTL, quotas, and concurrent writes.
+- Make the registry-level `read_result` resolve an explicit scope when one is
+  provided.  Keep current behavior in optional library mode.
+- Bind adapter-level `read_result` handlers per request.  Do not rely on a
+  context variable inside a thread or process backend.
+- Apply the same scope API to `default_result_store()`.
+- Add orphan-blob sweep and blob-before-metadata write order.
+- Add tests for scope matching, id width compatibility, id entropy, TTL,
+  quotas, storage-pressure degradation, and concurrent writes.
 
 Acceptance: existing tests pass; new isolation tests pass in library mode;
 no server changes are required yet.
@@ -223,16 +295,28 @@ no server changes are required yet.
 
 Goal: isolate agents that share one registry.
 
-- Bind scope to `(principal.key_id, logical session_id)` in MCP.
-- Add an OpenAPI session identity (`X-Agent-Session` or issued token).
-- Revoke results on session end, with a configurable grace period.
-- Enforce per-tenant and per-session quotas.
+- Bind scope to `(principal.key_id, logical session_id)` in MCP.  The operator
+  is an override, not part of the scope key.
+- Add `POST /sessions`, returning a signed, principal-bound, expiring session
+  token for OpenAPI.  `X-Agent-Session` is a label only and never part of
+  authorization.
+- Set `result_scope_policy="required"` at server bootstrap.
+- Revoke results on session end, with a configurable grace period.  A
+  disconnect is non-terminal; an explicit revoke is terminal.
+- Enforce per-tenant and per-session quotas.  A quota failure degrades to
+  truncated output without a handle, plus one warning.
 - Return the same error for unknown and unauthorized ids.
-- Add audit log entries for denials, revocations, and operator reads.
+- Add audit log entries for denials, revocations, and operator reads.  Record
+  principal, tool, reason, and id existence; never content.
+- Retain session results across transport reconnects by default, bounded by
+  idle and hard TTL.  Resume requires the signed token before grace expiry.
+- Enable per-tenant encryption for hosted multi-customer deployments.
 
 Acceptance: two keys cannot read each other's results; two sessions of one
 key cannot read each other's results; disconnect plus grace expiry removes
-results; one tenant cannot evict another tenant's live result.
+results; a resume before grace reaches the same logical session; one tenant
+cannot evict another tenant's live result; quota pressure leaves the tool call
+successful with truncated output.
 
 ### Phase 2 — Access ergonomics
 
@@ -254,7 +338,8 @@ Goal: survive restarts and serve multiple processes.
 
 - SQLite index plus content-addressed blobs, with reference counts.
 - Multi-process locks and leases.
-- Per-tenant encryption at rest when tenants are mutually untrusted.
+- Per-tenant encryption at rest for deployments that did not enable it in
+  Phase 1.
 - Admin listing, inspection, deletion, and audit.
 - Metrics: bytes per tenant, expiry rate, eviction rate, denial rate.
 
@@ -294,13 +379,26 @@ Current results are immutable, so no edit/version check is needed.  If
 mutable named artifacts are added later, use a version or ETag for
 compare-and-swap, and keep ownership tied to the authenticated principal.
 
-## Open questions
+## Resolved choices
 
-1. Does an OpenAPI caller get an `X-Agent-Session` header, or must it call a
-   `POST /sessions` endpoint to obtain a signed token?
-2. Should results survive a transport reconnect by default, or should only
-   explicitly resumable sessions retain them?
-3. Are tenants mutually untrusted on one host?  If yes, Phase 1 cannot rely
-   on filesystem permissions alone and needs per-tenant encryption earlier.
-4. Should a shared API key share results by default?  Recommendation: no;
-   scope to the logical session.
+1. **OpenAPI identity.** `POST /sessions` returns a signed, principal-bound,
+   expiring token.  `X-Agent-Session` is a client-side label only; a bare
+   header never establishes identity.
+2. **Reconnect retention.** Results survive a transport reconnect by default,
+   tied to the logical session and bounded by idle and hard TTL.  Resume must
+   happen before the disconnect grace expires.  An explicit end revokes
+   immediately.
+3. **Tenant trust.** The default is one operator and many agents.  Hosted
+   multi-customer deployments enable per-tenant encryption in Phase 1; other
+   deployments get it in Phase 3.
+4. **Shared-key default.** A shared API key does not share results.  Scope is
+   the logical session; cross-session access goes through an explicit
+   capability.
+
+## Remaining decisions before Accepted
+
+- Default values for `hard_ttl`, `idle_ttl`, and `disconnect_grace`, and
+  whether an operator read returns content or metadata only.
+- Session-token lifetime and renewal policy for OpenAPI.
+- Whether a resumed session keeps the same `session_id` or a new id with a
+  parent link.  Either way, the signed token names the logical session.
