@@ -226,6 +226,8 @@ class ToolRegistry(
                 ``ToolMetadata.extra["output_schema"]``.  An explicit
                 declaration on the tool always wins, and an annotation that
                 cannot be resolved to a complete schema adds nothing.
+                Only callables registered by the registry are derived; a
+                pre-built ``Tool`` is registered or overridden as-is.
                 Defaults to ``False``: publishing an ``outputSchema`` changes
                 what MCP clients see, so enabling it is a deployment choice.
 
