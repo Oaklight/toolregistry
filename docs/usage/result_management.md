@@ -160,7 +160,12 @@ files are created with mode `0600`. The header carries an opaque id
 `read_result(id, offset=0, limit=8000)` tool pages through the stored text.
 A result expires after 24 hours, and the directory is capped at 64 MiB with the
 oldest file evicted first; the file just written is never evicted, even when it
-alone exceeds the quota.
+alone exceeds the quota. Eviction is global and scope-blind in Phase 0: a
+tenant that writes enough results can evict another tenant's live result.
+Per-tenant and per-session quotas arrive in Phase 1. Reads compare the blob's
+size with its metadata and report a truncated or partially restored blob as
+corrupt instead of serving it; the recorded SHA-256 is available for an
+explicit full verification but is not recomputed on every page.
 
 Without the flag nothing is written to disk: a truncated result is only the
 truncated text.
@@ -210,6 +215,13 @@ result. Pre-ADR-004 `res_<12 hex>` files carry no owner metadata and are denied
 by default; `ResultStore(allow_legacy=True)` keeps them readable for an
 unscoped caller.
 
+The built-in `read_result` tool is local file I/O. The registry resolves its
+scope on the dispatching thread, binds that scope in the worker, and always
+runs it on the thread backend. That is what makes `use_result_scope()` work for
+tool calls; it also avoids sending the registry and its locks to a process
+pool. Server adapters still bind a provider or a per-request handler rather
+than depending on ambient state.
+
 ## Programmatic Access
 
 The truncation module can also be used directly:
@@ -246,10 +258,11 @@ without a `store` uses the process-wide `default_result_store()`; pass your own
 result belongs to a tenant or session. The `ResultStore` API also exposes
 `put_result()`, which returns a `ResultInfo` with the id, size, SHA-256,
 content type, tool name, owner, and timestamps, and `stat(result_id,
-scope=...)`, which reads that metadata without extending the idle TTL. A
-registry's built-in `read_result` reads only results stored by that registry,
-so a direct `truncate_result` call must be read back through the same store you
-passed it.
+scope=...)`, which reads that metadata without extending the idle TTL.
+`put_result()` is the extension point for subclasses; `put()` remains a
+compatibility wrapper that delegates to it. A registry's built-in `read_result`
+reads only results stored by that registry, so a direct `truncate_result` call
+must be read back through the same store you passed it.
 
 ### TruncatedResult Fields
 
