@@ -1,6 +1,8 @@
 """Result size management: truncation and persistence for large tool outputs."""
 
 import contextlib
+import contextvars
+import hashlib
 import json
 import os
 import re
@@ -8,10 +10,10 @@ import secrets
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 #: Characters per token used to convert a token budget into characters.
 #: This is a fixed estimate, not a tokenizer: a token limit is an
@@ -44,13 +46,32 @@ DEFAULT_RESULT_TTL_SECONDS = 24 * 60 * 60.0
 #: Default total size of the persistence directory, in bytes (64 MiB).
 DEFAULT_RESULT_QUOTA_BYTES = 64 * 1024 * 1024
 
+#: Default idle lifetime of a persisted result.  ``None`` means no sliding
+#: deadline; the hard TTL still applies.
+DEFAULT_RESULT_IDLE_TTL_SECONDS: float | None = None
+
+#: Default scope policy.  Library callers do not provide a scope.
+DEFAULT_RESULT_SCOPE_POLICY = "optional"
+
 #: Characters returned by one ``read_result`` call when *limit* is omitted.
 DEFAULT_READ_RESULT_LIMIT = 8000
 
 #: Characters decoded per step while skipping to a read offset.
 _READ_CHUNK = 65536
 
-_RESULT_ID_PATTERN = re.compile(r"^res_[0-9a-f]{12}$")
+#: Hex characters in a newly allocated result id (128 random bits).
+_RESULT_ID_HEX_CHARS = 32
+
+#: Result ids written before ADR-004 had 12 hex characters (48 bits).
+_LEGACY_RESULT_ID_HEX_CHARS = 12
+
+_RESULT_ID_PATTERN = re.compile(
+    rf"^res_(?:[0-9a-f]{{{_LEGACY_RESULT_ID_HEX_CHARS}}}"
+    rf"|[0-9a-f]{{{_RESULT_ID_HEX_CHARS}}})$"
+)
+
+_RESULT_METADATA_SUFFIX = ".json"
+_RESULT_BLOB_SUFFIX = ".txt"
 
 
 class TruncationStrategy(str, Enum):
@@ -67,6 +88,98 @@ class TruncationStrategy(str, Enum):
     HEAD_TAIL = "head_tail"
 
 
+ResultScopePolicy = Literal["optional", "required", "session_required"]
+
+
+@dataclass(frozen=True)
+class ResultScope:
+    """Owner scope attached to a persisted result.
+
+    Attributes:
+        tenant: Authenticated tenant or API-key id.  ``None`` only in
+            unscoped library mode.
+        session: Logical agent session.  ``None`` marks a tenant-shared
+            result; a non-``None`` session marks a session-private result.
+    """
+
+    tenant: str | None = None
+    session: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("tenant", "session"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{name} must be a non-empty string or None")
+        if self.session is not None and self.tenant is None:
+            raise ValueError("session scope requires a tenant")
+
+
+result_scope_var: contextvars.ContextVar[ResultScope | None] = contextvars.ContextVar(
+    "toolregistry_result_scope", default=None
+)
+"""Current result scope, when a caller set one.
+
+This is a convenience for in-process library callers.  Executor backends do
+not carry context variables into worker threads or processes; server code
+must pass a scope explicitly or bind a per-request handler.
+"""
+
+
+def current_result_scope() -> ResultScope | None:
+    """Return the scope bound to the current context, if any."""
+    return result_scope_var.get()
+
+
+@contextlib.contextmanager
+def use_result_scope(scope: ResultScope | None) -> Iterator[None]:
+    """Bind *scope* for the duration of the context.
+
+    Args:
+        scope: Scope to bind, or ``None`` to bind an unscoped context.
+
+    Yields:
+        Nothing.  The previous binding is restored on exit.
+    """
+    token = result_scope_var.set(scope)
+    try:
+        yield
+    finally:
+        result_scope_var.reset(token)
+
+
+@dataclass(frozen=True)
+class ResultInfo:
+    """Metadata for one persisted result.
+
+    Attributes:
+        result_id: Opaque result id.
+        path: Host path to the content blob.  Programmatic use only.
+        size_bytes: Stored content size in bytes.
+        sha256: SHA-256 digest of the stored content.
+        content_type: Stored content type.
+        tool_name: Tool that produced the result.
+        tenant: Owning tenant, or ``None`` in library mode.
+        session: Owning logical session; ``None`` means tenant-shared.
+        created_at: Wall-clock creation time.
+        last_access_at: Wall-clock time of the last successful read.
+        expires_at: Effective expiry after the TTL rules are applied.
+        legacy: Whether this record predates owner metadata.
+    """
+
+    result_id: str
+    path: str
+    size_bytes: int
+    sha256: str
+    content_type: str
+    tool_name: str
+    tenant: str | None
+    session: str | None
+    created_at: float
+    last_access_at: float
+    expires_at: float
+    legacy: bool = False
+
+
 @dataclass
 class TruncatedResult:
     """Container for a possibly-truncated tool result.
@@ -78,7 +191,7 @@ class TruncatedResult:
         full_path: Host path to the persisted full result.  For programmatic
             callers only: :meth:`__str__` never renders it, because the
             string form is placed in the model context.
-        result_id: Opaque id (``res_<12 hex>``) under which the full result
+        result_id: Opaque id (``res_<32 hex>``) under which the full result
             can be read back with the ``read_result`` tool.  ``None`` when
             the result was not persisted.
     """
@@ -132,21 +245,34 @@ def truncation_notice(
 class ResultStore:
     """Per-run storage for full tool results.
 
-    Files live in a private directory, are created with mode ``0600``,
-    expire after *ttl* seconds, and are evicted oldest-first when the
-    directory would exceed *quota* bytes.  An id is opaque
-    (``res_<12 hex>``) and the filesystem path is never placed in a
-    truncation header.
+    Each result is a content blob (``<id>.txt``) plus a sidecar metadata
+    record (``<id>.json``).  Files live in a private directory, are created
+    with mode ``0600``, and older results are evicted when the directory
+    would exceed *quota* bytes.  The result being written is retained even
+    when it alone exceeds the quota, so a write never fails for storage
+    pressure; the trade-off is that a single oversized result can leave the
+    directory above its quota.  New ids are ``res_<32 hex>`` (128 random
+    bits); legacy ``res_<12 hex>`` ids remain readable when *allow_legacy*
+    is on.
 
     Args:
         root: Directory to store results in.  ``None`` creates a fresh
             per-run directory under the system temp dir with mode ``0700``.
-        ttl: Seconds a result stays readable.
+        ttl: Hard lifetime of a result, in seconds, measured from creation.
         quota: Total bytes the directory may hold.
+        idle_ttl: Sliding lifetime measured from the last successful read.
+            ``None`` disables the sliding deadline; the hard TTL still
+            applies.
+        scope_policy: ``"optional"`` for library mode, ``"required"`` when a
+            scope object must exist, or ``"session_required"`` when the scope
+            must carry a session.
+        allow_legacy: Whether pre-ADR-004 files without owner metadata stay
+            readable.  ``False`` denies and sweeps them.
         clock: Wall-clock source, injectable for tests.
 
     Raises:
-        ValueError: If *ttl* is not positive or *quota* is negative.
+        ValueError: If a retention value is invalid or *scope_policy* is
+            unknown.
     """
 
     def __init__(
@@ -155,12 +281,21 @@ class ResultStore:
         *,
         ttl: float = DEFAULT_RESULT_TTL_SECONDS,
         quota: int = DEFAULT_RESULT_QUOTA_BYTES,
+        idle_ttl: float | None = DEFAULT_RESULT_IDLE_TTL_SECONDS,
+        scope_policy: ResultScopePolicy = DEFAULT_RESULT_SCOPE_POLICY,
+        allow_legacy: bool = False,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if ttl <= 0:
             raise ValueError("ttl must be positive")
+        if idle_ttl is not None and idle_ttl <= 0:
+            raise ValueError("idle_ttl must be positive or None")
         if quota < 0:
             raise ValueError("quota must be non-negative")
+        if scope_policy not in ("optional", "required", "session_required"):
+            raise ValueError(f"unknown result scope policy {scope_policy!r}")
+        if not isinstance(allow_legacy, bool):
+            raise TypeError("allow_legacy must be a boolean")
         self.root = (
             root
             if root is not None
@@ -168,22 +303,91 @@ class ResultStore:
         )
         os.makedirs(self.root, mode=0o700, exist_ok=True)
         self.ttl = ttl
+        self.idle_ttl = idle_ttl
         self.quota = quota
+        self.scope_policy = scope_policy
+        self.allow_legacy = allow_legacy
         self._clock = clock
         self._lock = threading.Lock()
 
-    def put(self, text: str) -> tuple[str, str]:
+    @property
+    def hard_ttl(self) -> float:
+        """The hard TTL, in seconds."""
+        return self.ttl
+
+    def put(
+        self,
+        text: str,
+        *,
+        scope: ResultScope | None = None,
+        tool_name: str = "",
+        content_type: str = "text/plain",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> tuple[str, str]:
         """Store *text*, returning ``(result_id, path)``.
 
-        Cleanup runs first: expired files are removed, then the oldest
-        files are evicted until the directory fits the quota.  The file just
+        This is the compatibility wrapper around :meth:`put_result`.
+        Cleanup runs first: expired files are removed, then the oldest files
+        are evicted until the directory fits the quota.  The result just
         written is never evicted, even when it alone exceeds the quota.
+
+        Args:
+            text: Full result text.
+            scope: Owner scope.  ``None`` uses the current context scope.
+            tool_name: Tool that produced the result.
+            content_type: Content type recorded in the metadata.
+            metadata: Extra JSON-serializable metadata.
+
+        Returns:
+            ``(result_id, path)`` for the stored blob.
         """
+        info = self.put_result(
+            text,
+            scope=scope,
+            tool_name=tool_name,
+            content_type=content_type,
+            metadata=metadata,
+        )
+        return info.result_id, info.path
+
+    def put_result(
+        self,
+        text: str,
+        *,
+        scope: ResultScope | None = None,
+        tool_name: str = "",
+        content_type: str = "text/plain",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> ResultInfo:
+        """Store *text* and return its metadata record.
+
+        The blob is written first, then its metadata is installed with an
+        atomic rename.  A crash between the two leaves an orphan blob, never
+        a metadata record that points at missing bytes.
+
+        Args:
+            text: Full result text.
+            scope: Owner scope.  ``None`` uses the current context scope.
+            tool_name: Tool that produced the result.
+            content_type: Content type recorded in the metadata.
+            metadata: Extra JSON-serializable metadata.
+
+        Returns:
+            Metadata for the stored result.
+
+        Raises:
+            ValueError: If the scope policy is not satisfied.
+            TypeError: If *metadata* is not JSON-serializable.
+        """
+        resolved_scope = self._resolve_scope(scope)
+        payload = text.encode("utf-8")
+        extra = dict(metadata) if metadata is not None else {}
+
         with self._lock:
             self._cleanup_locked()
             for _ in range(8):
-                result_id = f"res_{secrets.token_hex(6)}"
-                path = os.path.join(self.root, f"{result_id}.txt")
+                result_id = f"res_{secrets.token_hex(_RESULT_ID_HEX_CHARS // 2)}"
+                path = self.path_for(result_id)
                 try:
                     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 except FileExistsError:
@@ -191,16 +395,32 @@ class ResultStore:
                 try:
                     with os.fdopen(handle, "w", encoding="utf-8") as stream:
                         stream.write(text)
-                    # Timestamps follow the store clock so TTL and eviction
-                    # order are testable without sleeping.
+                        stream.flush()
+                        os.fsync(stream.fileno())
                     now = self._clock()
                     os.utime(path, (now, now))
+                    record = {
+                        "version": 1,
+                        "id": result_id,
+                        "tenant": (resolved_scope.tenant if resolved_scope else None),
+                        "session": (resolved_scope.session if resolved_scope else None),
+                        "tool_name": tool_name,
+                        "content_type": content_type,
+                        "created_at": now,
+                        "last_access_at": now,
+                        "size_bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "metadata": extra,
+                    }
+                    self._write_metadata_locked(result_id, record)
                 except BaseException:
                     with contextlib.suppress(OSError):
                         os.unlink(path)
+                    with contextlib.suppress(OSError):
+                        os.unlink(self._metadata_path(result_id))
                     raise
-                self._enforce_quota_locked(keep=path)
-                return result_id, path
+                self._enforce_quota_locked(keep_id=result_id)
+                return self._info_from_record(record, path)
         raise RuntimeError("could not allocate a result id")
 
     def path_for(self, result_id: str) -> str:
@@ -213,13 +433,15 @@ class ResultStore:
             result_id
         ):
             raise ValueError(f"invalid result id {result_id!r}")
-        return os.path.join(self.root, f"{result_id}.txt")
+        return os.path.join(self.root, f"{result_id}{_RESULT_BLOB_SUFFIX}")
 
     def read(
         self,
         result_id: str,
         offset: int = 0,
         limit: int = DEFAULT_READ_RESULT_LIMIT,
+        *,
+        scope: ResultScope | None = None,
     ) -> str:
         """Return one character slice of a stored result.
 
@@ -227,68 +449,313 @@ class ResultStore:
             result_id: Opaque id returned by :meth:`put`.
             offset: Character offset to start at.
             limit: Maximum characters to return.
+            scope: Caller scope.  ``None`` uses the current context scope.
 
         Raises:
-            ValueError: If the id is invalid or unknown, the file expired,
-                or *offset*/*limit* is not a non-negative integer.
+            ValueError: If the id is invalid or unknown, the caller is not
+                authorized, the result expired, the scope policy is not
+                satisfied, or *offset*/*limit* is invalid.
         """
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset must be a non-negative integer")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
             raise ValueError("limit must be a non-negative integer")
+        resolved_scope = self._resolve_scope(scope)
         path = self.path_for(result_id)
-        try:
-            if self._clock() - os.path.getmtime(path) > self.ttl:
-                with contextlib.suppress(OSError):
-                    os.unlink(path)
+        with self._lock:
+            record = self._record_locked(result_id, path)
+            self._authorize_locked(record, resolved_scope)
+            if self._is_expired(record):
+                self._remove_locked(result_id)
                 raise ValueError(f"result id {result_id!r} has expired")
+
+        try:
             with open(path, encoding="utf-8") as stream:
                 remaining = offset
                 while remaining > 0:
                     skipped = len(stream.read(min(remaining, _READ_CHUNK)))
                     if skipped == 0:
-                        return ""
+                        # Reading past the end still counts as an access so
+                        # a paging client keeps its idle deadline alive.
+                        result = ""
+                        break
                     remaining -= skipped
-                return stream.read(limit)
+                else:
+                    result = stream.read(limit)
         except FileNotFoundError as exc:
             raise ValueError(f"unknown result id {result_id!r}") from exc
 
-    def _cleanup_locked(self) -> None:
-        """Remove expired files.  Holds the lock."""
-        now = self._clock()
-        for path in self._files():
-            with contextlib.suppress(OSError):
-                if now - os.path.getmtime(path) > self.ttl:
-                    os.unlink(path)
+        self._touch(result_id, record)
+        return result
 
-    def _enforce_quota_locked(self, keep: str) -> None:
-        """Evict the oldest files until the directory fits.  Holds the lock."""
+    def stat(
+        self,
+        result_id: str,
+        *,
+        scope: ResultScope | None = None,
+    ) -> ResultInfo:
+        """Return metadata for a stored result without extending its TTL.
+
+        Args:
+            result_id: Opaque id returned by :meth:`put`.
+            scope: Caller scope.  ``None`` uses the current context scope.
+
+        Returns:
+            The stored result metadata.
+
+        Raises:
+            ValueError: If the id is invalid or unknown, the caller is not
+                authorized, the result expired, or the scope policy is not
+                satisfied.
+        """
+        resolved_scope = self._resolve_scope(scope)
+        path = self.path_for(result_id)
+        with self._lock:
+            record = self._record_locked(result_id, path)
+            self._authorize_locked(record, resolved_scope)
+            if self._is_expired(record):
+                self._remove_locked(result_id)
+                raise ValueError(f"result id {result_id!r} has expired")
+            return self._info_from_record(record, path)
+
+    def _resolve_scope(self, scope: ResultScope | None) -> ResultScope | None:
+        """Resolve and validate the caller scope against the policy."""
+        resolved = scope if scope is not None else current_result_scope()
+        if resolved is not None and not isinstance(resolved, ResultScope):
+            raise TypeError("scope must be a ResultScope or None")
+        if self.scope_policy == "session_required":
+            if resolved is None or resolved.session is None:
+                raise ValueError("a result scope with a session is required")
+        elif self.scope_policy == "required" and resolved is None:
+            raise ValueError("a result scope is required")
+        return resolved
+
+    def _authorize_locked(
+        self, record: Mapping[str, Any], scope: ResultScope | None
+    ) -> None:
+        """Raise ``ValueError`` unless *scope* may read *record*."""
+        result_id = str(record.get("id", ""))
+        if record.get("legacy"):
+            if self.allow_legacy and scope is None:
+                return
+            raise ValueError(f"unknown result id {result_id!r}")
+        record_tenant = record.get("tenant")
+        record_session = record.get("session")
+        if record_tenant is None and record_session is None:
+            if scope is None:
+                return
+            raise ValueError(f"unknown result id {result_id!r}")
+        if scope is None or scope.tenant != record_tenant:
+            raise ValueError(f"unknown result id {result_id!r}")
+        if record_session is None:
+            return
+        if scope.session != record_session:
+            raise ValueError(f"unknown result id {result_id!r}")
+
+    def _record_locked(self, result_id: str, path: str) -> dict[str, Any]:
+        """Return the metadata record, or deny/sweep a legacy record."""
+        if not os.path.exists(path):
+            self._remove_locked(result_id)
+            raise ValueError(f"unknown result id {result_id!r}")
+        record = self._read_metadata_locked(result_id)
+        if record is not None:
+            return record
+        if not self.allow_legacy:
+            self._remove_locked(result_id)
+            raise ValueError(f"unknown result id {result_id!r}")
+        return self._legacy_record_locked(result_id, path)
+
+    def _legacy_record_locked(self, result_id: str, path: str) -> dict[str, Any]:
+        """Build an in-memory record for a pre-ADR-004 blob."""
+        stat = os.stat(path)
+        return {
+            "version": 0,
+            "id": result_id,
+            "tenant": None,
+            "session": None,
+            "tool_name": "",
+            "content_type": "text/plain",
+            "created_at": stat.st_mtime,
+            "last_access_at": stat.st_mtime,
+            "size_bytes": stat.st_size,
+            "sha256": "",
+            "metadata": {},
+            "legacy": True,
+        }
+
+    def _read_metadata_locked(self, result_id: str) -> dict[str, Any] | None:
+        """Return a metadata record, or ``None`` when it is absent/corrupt."""
+        path = self._metadata_path(result_id)
+        try:
+            with open(path, encoding="utf-8") as stream:
+                record = json.load(stream)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict) or record.get("id") != result_id:
+            return None
+        return record
+
+    def _write_metadata_locked(self, result_id: str, record: Mapping[str, Any]) -> None:
+        """Atomically install the metadata record.  Holds the lock."""
+        meta_path = self._metadata_path(result_id)
+        temp_path = os.path.join(
+            self.root,
+            f".{result_id}.{secrets.token_hex(4)}{_RESULT_METADATA_SUFFIX}.tmp",
+        )
+        handle = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                json.dump(
+                    record,
+                    stream,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, meta_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temp_path)
+            raise
+
+    def _metadata_path(self, result_id: str) -> str:
+        """Return the metadata path for *result_id*."""
+        return os.path.join(self.root, f"{result_id}{_RESULT_METADATA_SUFFIX}")
+
+    def _touch(self, result_id: str, record: Mapping[str, Any]) -> None:
+        """Update the sliding deadline after a successful read.
+
+        The caller no longer holds the store lock; this method re-acquires it
+        so a concurrent eviction cannot race the metadata rewrite.
+        """
+        if record.get("legacy"):
+            return
+        with self._lock:
+            current = self._read_metadata_locked(result_id)
+            if current is None:
+                return
+            current["last_access_at"] = self._clock()
+            with contextlib.suppress(OSError):
+                self._write_metadata_locked(result_id, current)
+
+    def _expires_at(self, record: Mapping[str, Any]) -> float:
+        """Return the effective expiry for *record*."""
+        created = float(record.get("created_at", 0.0))
+        last_access = float(record.get("last_access_at", created))
+        expires = created + self.ttl
+        if self.idle_ttl is not None:
+            expires = min(expires, last_access + self.idle_ttl)
+        return expires
+
+    def _is_expired(self, record: Mapping[str, Any]) -> bool:
+        """Return whether *record* is past its effective expiry."""
+        return self._clock() > self._expires_at(record)
+
+    def _info_from_record(self, record: Mapping[str, Any], path: str) -> ResultInfo:
+        """Build a :class:`ResultInfo` from a metadata record."""
+        created = float(record.get("created_at", 0.0))
+        last_access = float(record.get("last_access_at", created))
+        return ResultInfo(
+            result_id=str(record.get("id", "")),
+            path=path,
+            size_bytes=int(record.get("size_bytes", 0)),
+            sha256=str(record.get("sha256", "")),
+            content_type=str(record.get("content_type", "text/plain")),
+            tool_name=str(record.get("tool_name", "")),
+            tenant=record.get("tenant"),
+            session=record.get("session"),
+            created_at=created,
+            last_access_at=last_access,
+            expires_at=self._expires_at(record),
+            legacy=bool(record.get("legacy", False)),
+        )
+
+    def _remove_locked(self, result_id: str) -> None:
+        """Remove a blob and its metadata.  Holds the lock."""
+        with contextlib.suppress(OSError):
+            os.unlink(self.path_for(result_id))
+        with contextlib.suppress(OSError):
+            os.unlink(self._metadata_path(result_id))
+
+    def _cleanup_locked(self) -> None:
+        """Remove expired, legacy, orphan, and temporary files.  Holds lock."""
+        now = self._clock()
+        live_ids: set[str] = set()
+        for path in self._files():
+            result_id = os.path.basename(path)[: -len(_RESULT_BLOB_SUFFIX)]
+            record = self._read_metadata_locked(result_id)
+            if record is None:
+                if not self.allow_legacy:
+                    with contextlib.suppress(OSError):
+                        os.unlink(path)
+                    with contextlib.suppress(OSError):
+                        os.unlink(self._metadata_path(result_id))
+                    continue
+                record = self._legacy_record_locked(result_id, path)
+            if now > self._expires_at(record):
+                self._remove_locked(result_id)
+                continue
+            live_ids.add(result_id)
+
+        try:
+            names = os.listdir(self.root)
+        except OSError:
+            return
+        for name in names:
+            if name.endswith(".tmp"):
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.join(self.root, name))
+                continue
+            if not name.endswith(_RESULT_METADATA_SUFFIX):
+                continue
+            result_id = name[: -len(_RESULT_METADATA_SUFFIX)]
+            if result_id not in live_ids:
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.join(self.root, name))
+
+    def _enforce_quota_locked(self, keep_id: str) -> None:
+        """Evict the oldest results until the directory fits.  Holds lock."""
         entries: list[tuple[float, int, str]] = []
         for path in self._files():
+            result_id = os.path.basename(path)[: -len(_RESULT_BLOB_SUFFIX)]
             try:
                 stat = os.stat(path)
             except OSError:
                 continue
-            entries.append((stat.st_mtime, stat.st_size, path))
+            record = self._read_metadata_locked(result_id)
+            created = (
+                float(record.get("created_at", stat.st_mtime))
+                if record is not None
+                else stat.st_mtime
+            )
+            size = stat.st_size
+            try:
+                size += os.stat(self._metadata_path(result_id)).st_size
+            except OSError:
+                pass
+            entries.append((created, size, result_id))
         total = sum(size for _, size, _ in entries)
-        for _, size, path in sorted(entries):
+        for _, size, result_id in sorted(entries):
             if total <= self.quota:
                 break
-            if path == keep:
+            if result_id == keep_id:
                 continue
-            with contextlib.suppress(OSError):
-                os.unlink(path)
-                total -= size
+            self._remove_locked(result_id)
+            total -= size
 
     def _files(self) -> list[str]:
-        """Return the stored result files, ignoring foreign files."""
+        """Return the stored result blobs, ignoring foreign files."""
         try:
             names = os.listdir(self.root)
         except OSError:
             return []
         paths = []
         for name in names:
-            if name.endswith(".txt") and _RESULT_ID_PATTERN.fullmatch(name[:-4]):
+            if not name.endswith(_RESULT_BLOB_SUFFIX):
+                continue
+            result_id = name[: -len(_RESULT_BLOB_SUFFIX)]
+            if _RESULT_ID_PATTERN.fullmatch(result_id):
                 paths.append(os.path.join(self.root, name))
         return paths
 
@@ -315,6 +782,18 @@ def default_result_store() -> ResultStore:
 def _json_text(value: Any) -> str:
     """Serialize *value* compactly, so pruned output stays valid JSON."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _result_content_type(text: str) -> str:
+    """Return ``application/json`` when *text* parses as JSON."""
+    stripped = text.lstrip()
+    if not stripped or stripped[0] not in "[{":
+        return "text/plain"
+    try:
+        json.loads(text)
+    except (TypeError, ValueError):
+        return "text/plain"
+    return "application/json"
 
 
 def _truncate_string(value: str, limit: int) -> tuple[str, int]:
@@ -564,6 +1043,7 @@ def truncate_result(
     tool_name: str = "",
     persist: bool = True,
     store: ResultStore | None = None,
+    scope: ResultScope | None = None,
 ) -> TruncatedResult:
     """Truncate a string result if it exceeds ``max_size`` characters.
 
@@ -586,11 +1066,13 @@ def truncate_result(
         result_str: The full result string.
         max_size: Maximum allowed size in characters.
         strategy: Truncation strategy for non-JSON text.
-        tool_name: Tool name.  Retained for callers that label results;
-            stored files are named by their opaque result id.
+        tool_name: Tool name recorded in the result metadata.
         persist: Whether to store the full result.
         store: Store to write to.  ``None`` uses
             :func:`default_result_store`, a process-wide per-run store.
+        scope: Owner scope recorded with the stored result.  ``None`` uses
+            the scope bound to the current context.  Server code passes the
+            scope explicitly instead of relying on the context variable.
 
     Returns:
         A ``TruncatedResult`` with the (possibly truncated) content and
@@ -606,7 +1088,14 @@ def truncate_result(
     full_path = None
     result_id = None
     if persist:
-        result_id, full_path = (store or default_result_store()).put(result_str)
+        info = (store or default_result_store()).put_result(
+            result_str,
+            scope=scope,
+            tool_name=tool_name,
+            content_type=_result_content_type(result_str),
+        )
+        result_id = info.result_id
+        full_path = info.path
 
     content = _truncate_json_document(result_str, max_size)
     if content is None:
