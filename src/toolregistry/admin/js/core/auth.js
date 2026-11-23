@@ -138,14 +138,34 @@ function promptForAdminToken(message) {
     return promise;
 }
 
+// A 429 or a rejected retry ends the request that opened the view without
+// leaving a promise for the form to resolve, so ``_pendingToken`` is null and
+// a submit would otherwise do nothing.  Restart the boot probe from the typed
+// token instead.  A successful probe reloads the page: the request that
+// failed cannot resume, and the panel should rebuild from an authenticated
+// document.
+async function _restartAuth(value) {
+    api.token = value;
+    AUTH_TOKEN = value;
+    const ready = await authenticate();
+    if (ready) window.location.reload();
+}
+
 function submitAuth(event) {
     if (event) event.preventDefault();
-    if (!_pendingToken) return;
     const input = _authNode('auth-token');
     const value = ((input && input.value) || '').trim();
     if (!value) {
         _setAuthError(t('auth.empty'));
         if (input) input.focus();
+        return;
+    }
+    if (!_pendingToken) {
+        _setAuthBusy(true);
+        _setAuthError('');
+        _restartAuth(value).catch(() => {
+            showAuthScreen(t('error.connectionFailed'));
+        });
         return;
     }
     const { resolve } = _pendingToken;
