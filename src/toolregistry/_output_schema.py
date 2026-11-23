@@ -14,7 +14,9 @@ counterparts (``Mapping``, ``Sequence``, ``Iterable``, ``Collection``),
 dataclass definitions are inlined.  References emitted by a pydantic model
 ``$defs`` are resolved before the schema is returned, because some MCP
 clients do not follow ``$ref``.  A recursive shape yields no schema rather
-than a looping conversion.
+than a looping conversion.  A concrete class derives an object schema only
+when it is a ``Mapping``; another iterable class adds nothing because the
+annotation alone does not fix its JSON encoding.
 """
 
 from __future__ import annotations
@@ -447,8 +449,6 @@ def _class_schema(
         return _pydantic_schema(cls)
     if issubclass(cls, Mapping):
         return {"type": "object"}
-    if issubclass(cls, Iterable):
-        return {"type": "array"}
     return None
 
 
