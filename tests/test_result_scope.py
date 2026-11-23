@@ -427,7 +427,7 @@ class TestRegistryWiring:
         assert "read_result" in registry
         assert registry._result_store is store
 
-        result = registry.invoke("big", {}).result
+        result = registry.invoke("big", {}, execution_mode="thread").result
         result_id = _extract_id(result)
         info = store.stat(result_id)
         assert info.tool_name == "big"
@@ -453,7 +453,9 @@ class TestRegistryWiring:
         holder = [ResultScope(tenant="tenant-a", session="session-1")]
         registry = _registry_with_big(store, result_scope_provider=lambda: holder[0])
 
-        result_id = _extract_id(registry.invoke("big", {}).result)
+        result_id = _extract_id(
+            registry.invoke("big", {}, execution_mode="thread").result
+        )
         assert store.stat(result_id, scope=holder[0]).size_bytes == 400
         assert registry.read_result(result_id) == "x" * 400
 
@@ -467,7 +469,9 @@ class TestRegistryWiring:
         scope = ResultScope(tenant="tenant-a", session="session-1")
 
         with use_result_scope(scope):
-            result_id = _extract_id(registry.invoke("big", {}).result)
+            result_id = _extract_id(
+                registry.invoke("big", {}, execution_mode="thread").result
+            )
             assert registry.read_result(result_id) == "x" * 400
 
         with pytest.raises(ValueError, match="unknown result id"):
@@ -480,7 +484,7 @@ class TestRegistryWiring:
             result_scope_provider=lambda: ResultScope(tenant="tenant-a"),
         )
 
-        result = registry.invoke("big", {})
+        result = registry.invoke("big", {}, execution_mode="thread")
         assert "session is required" in result.message
 
     def test_invalid_registry_settings_are_refused(self):
@@ -507,7 +511,7 @@ class TestRegistryWiring:
         )
 
         with use_result_scope(scope):
-            result = registry.invoke("blocks", {}).result
+            result = registry.invoke("blocks", {}, execution_mode="thread").result
 
         notice = result[-1]["text"]
         result_id = _extract_id(notice)
