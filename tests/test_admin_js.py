@@ -629,3 +629,279 @@ def test_extension_group_reuses_shell_section_labels(tmp_path: Path) -> None:
         },
         "precedence": "Group custom",
     }
+
+
+_RESTART_HARNESS = """
+const vm = require('vm');
+const fs = require('fs');
+
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const scenario = process.argv[3];
+const goodToken = 'good';
+
+const elements = {};
+function node(id) {
+  if (!elements[id]) {
+    elements[id] = {
+      id, hidden: true, value: '', textContent: '', disabled: false,
+      innerHTML: '', type: 'password', title: '', placeholder: '',
+      dataset: {}, attrs: {},
+      focus() {}, addEventListener() {},
+      setAttribute(name, value) { this.attrs[name] = value; },
+      getAttribute(name) { return this.attrs[name]; },
+    };
+  }
+  return elements[id];
+}
+
+let reloaded = false;
+const context = vm.createContext(globalThis);
+globalThis.document = {
+  body: { dataset: {} },
+  getElementById: node,
+  addEventListener() {},
+};
+globalThis.window = {
+  requestAnimationFrame: (fn) => fn(),
+  location: { reload() { reloaded = true; } },
+};
+globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+globalThis.API_BASE = 'http://example';
+globalThis.AUTH_TOKEN = '';
+globalThis.autoRefreshInterval = null;
+globalThis.updateConnectionStatus = () => {};
+globalThis.syncThemeControls = () => {};
+
+let locked = scenario === 'lockout';
+const calls = [];
+globalThis.fetch = async (url, options = {}) => {
+  const auth = (options.headers && options.headers.Authorization) || null;
+  calls.push(auth);
+  if (locked) {
+    return {
+      status: 429,
+      ok: false,
+      statusText: 'Too Many Requests',
+      headers: { get: (name) => (name === 'Retry-After' ? '1' : null) },
+      async json() { return { message: 'Too many failed attempts' }; },
+    };
+  }
+  const ok = auth === 'Bearer ' + goodToken;
+  return {
+    status: ok ? 200 : 401,
+    ok,
+    statusText: ok ? 'OK' : 'Unauthorized',
+    headers: { get: () => null },
+    async json() { return ok ? { ok: true } : { message: 'Unauthorized' }; },
+  };
+};
+
+vm.runInContext(code, context);
+// i18n.js declares t as a global.  Install the identity stub after the
+// script runs so assertions see message keys, not translated text.
+globalThis.t = (key) => key;
+
+(async () => {
+  const api = globalThis.__api;
+  if (scenario === 'retried') {
+    // The panel holds a stale token; the operator answers the view with a
+    // wrong one, and the one permitted retry is rejected too.
+    api.token = 'stale';
+    globalThis.AUTH_TOKEN = 'stale';
+    setTimeout(() => {
+      node('auth-token').value = 'wrong';
+      globalThis.__submitAuth({ preventDefault() {} });
+    }, 10);
+  } else {
+    // The panel is signed in and a request comes back as a lockout.
+    api.token = goodToken;
+    globalThis.AUTH_TOKEN = goodToken;
+  }
+  let firstError = null;
+  try {
+    await api.request('/probe');
+  } catch (error) {
+    firstError = {
+      message: error.message,
+      status: error.status === undefined ? null : error.status,
+    };
+  }
+  const dead = {
+    calls: calls.slice(),
+    state: document.body.dataset.auth,
+    error: node('auth-error').textContent,
+    pending: vm.runInContext('_pendingToken === null', context),
+    firstError,
+  };
+
+  // The terminal failure left the view up but nothing waiting on it.  The
+  // next submit must start a fresh probe instead of returning silently.
+  locked = false;
+  const before = calls.length;
+  node('auth-token').value = goodToken;
+  globalThis.__submitAuth({ preventDefault() {} });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  console.log(JSON.stringify({
+    dead,
+    extraCalls: calls.slice(before),
+    state: document.body.dataset.auth,
+    reloaded,
+  }));
+})();
+"""
+
+
+@pytest.mark.parametrize(
+    ("scenario", "status"),
+    [
+        ("lockout", 429),
+        ("retried", 401),
+    ],
+)
+def test_the_sign_in_view_restarts_after_a_terminal_failure(
+    tmp_path: Path, scenario: str, status: int
+) -> None:
+    """A 429 or a rejected retry must leave the form able to start a probe.
+
+    Both terminal paths in ``api.js`` paint the view and throw without opening
+    a pending promise, so ``submitAuth`` used to return silently and the page
+    was inert until a reload.
+    """
+    code_path = tmp_path / "admin_client.js"
+    code_path.write_text(_combined_source(), encoding="utf-8")
+    harness = tmp_path / "restart_harness.js"
+    harness.write_text(_RESTART_HARNESS, encoding="utf-8")
+
+    result = subprocess.run(
+        [NODE, str(harness), str(code_path), scenario],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed["dead"]["state"] == "login"
+    assert observed["dead"]["pending"] is True
+    assert observed["dead"]["firstError"]["status"] == status
+    # The submit issued a fresh probe with the typed token, and the accepted
+    # credential rebuilt the panel from a clean document.
+    assert observed["extraCalls"] == ["Bearer good"]
+    assert observed["state"] == "ok"
+    assert observed["reloaded"] is True
+
+
+_RESPONSE_HARNESS = """
+const vm = require('vm');
+const fs = require('fs');
+
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const scenario = process.argv[3];
+
+function reply(status, statusText, body) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    statusText,
+    headers: { get: () => null },
+    async json() {
+      if (body instanceof Error) throw body;
+      return body;
+    },
+  };
+}
+
+globalThis.API_BASE = 'http://example';
+globalThis.AUTH_TOKEN = '';
+globalThis.updateConnectionStatus = () => {};
+globalThis.completeAuth = () => {};
+globalThis.showAuthScreen = () => {};
+globalThis.promptForAdminToken = async () => '';
+globalThis.t = (key) => key;
+globalThis.fetch = async () => {
+  if (scenario === 'success') return reply(200, 'OK', { ok: true });
+  if (scenario === 'forbidden') {
+    return reply(403, 'Forbidden', {
+      error: 'Forbidden', message: 'Cross-origin request rejected',
+    });
+  }
+  if (scenario === 'unsupported') {
+    return reply(415, 'Unsupported Media Type', {
+      error: 'Unsupported Media Type',
+      message: 'State-changing requests must use Content-Type: application/json',
+    });
+  }
+  // A proxy may answer with a non-JSON body; only the status line remains.
+  return reply(415, 'Unsupported Media Type', new Error('not json'));
+};
+
+vm.runInContext(code, vm.createContext(globalThis));
+
+(async () => {
+  const api = globalThis.__api;
+  let threw = null;
+  let threwStatus = null;
+  try {
+    await api.request('/probe');
+  } catch (error) {
+    threw = error.message;
+    threwStatus = error.status === undefined ? null : error.status;
+  }
+  console.log(JSON.stringify({
+    authRequired: api.authRequired,
+    threw,
+    threwStatus,
+  }));
+})();
+"""
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("success", {"authRequired": False, "threw": None, "threwStatus": None}),
+        (
+            "forbidden",
+            {
+                "authRequired": None,
+                "threw": "Cross-origin request rejected",
+                "threwStatus": 403,
+            },
+        ),
+        (
+            "unsupported",
+            {
+                "authRequired": None,
+                "threw": (
+                    "State-changing requests must use Content-Type: application/json"
+                ),
+                "threwStatus": 415,
+            },
+        ),
+        (
+            "html_error",
+            {
+                "authRequired": None,
+                "threw": "415 Unsupported Media Type",
+                "threwStatus": 415,
+            },
+        ),
+    ],
+)
+def test_response_state_and_error_messages(
+    tmp_path: Path, scenario: str, expected: dict
+) -> None:
+    """403/415 messages reach the caller, and auth state is learned from a response."""
+    code_path = tmp_path / "admin_api.js"
+    code_path.write_text(ADMIN_API_JS + "\nglobalThis.__api = api;\n", encoding="utf-8")
+    harness = tmp_path / "response_harness.js"
+    harness.write_text(_RESPONSE_HARNESS, encoding="utf-8")
+
+    result = subprocess.run(
+        [NODE, str(harness), str(code_path), scenario],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed == expected
