@@ -412,6 +412,10 @@ def _class_schema(
     stack: frozenset[Any],
 ) -> dict[str, Any] | None:
     """Convert a class-like annotation into a JSON Schema node."""
+    if cls in (list, tuple):
+        return {"type": "array"}
+    if cls is dict:
+        return {"type": "object"}
     if issubclass(cls, Enum):
         return _literal_schema(tuple(cls))
     if cls in _PRIMITIVE_TYPES:
