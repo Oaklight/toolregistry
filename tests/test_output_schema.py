@@ -18,11 +18,12 @@ from typing import Literal, cast
 import pytest
 
 if sys.version_info >= (3, 11):
-    from typing import NotRequired, TypedDict
+    from typing import NotRequired, Required, TypedDict
 else:  # pragma: no cover - Python 3.10
-    from typing_extensions import NotRequired, TypedDict
+    from typing_extensions import NotRequired, Required, TypedDict
 
 from toolregistry import Tool, ToolMetadata, ToolRegistry
+from toolregistry import _output_schema as output_schema
 from toolregistry._output_schema import _inline_refs, derive_output_schema
 
 
@@ -66,6 +67,20 @@ class MustBase(TypedDict):
 
 class RelaxedChild(MustBase, total=False):
     extra: int
+
+
+class MixedBase(TypedDict):
+    p: int
+    q: NotRequired[int]
+
+
+class MixedChild(MixedBase, total=False):
+    r: str
+
+
+class ExplicitRequired(TypedDict, total=False):
+    must: Required[str]
+    note: str
 
 
 @dataclass
@@ -174,6 +189,16 @@ def returns_relaxed_child() -> RelaxedChild:
     return {"must": ""}
 
 
+def returns_mixed_child() -> MixedChild:
+    """Return a child of a base with mixed required and optional keys."""
+    return {"p": 0}
+
+
+def returns_explicit_required() -> ExplicitRequired:
+    """Return a total=False model whose Required marker is a string."""
+    return {"must": ""}
+
+
 def returns_mapping() -> Mapping[str, int]:
     """Return an abstract mapping."""
     return {}
@@ -267,6 +292,24 @@ def test_typeddict_optional_child_of_required_base_keeps_inherited_required() ->
     assert schema is not None
     assert schema["required"] == ["must"]
     assert set(schema["properties"]) == {"extra", "must"}
+
+
+def test_typeddict_mixed_base_keys_keep_per_class_total_flags() -> None:
+    """A required and an optional key from one base keep their own flags."""
+    schema = derive_output_schema(returns_mixed_child)
+
+    assert schema is not None
+    assert schema["required"] == ["p"]
+    assert set(schema["properties"]) == {"p", "q", "r"}
+
+
+def test_typeddict_resolved_required_marker_beats_leaf_total() -> None:
+    """``Required[T]`` stays required even when ``total=False`` and deferred."""
+    schema = derive_output_schema(returns_explicit_required)
+
+    assert schema is not None
+    assert schema["required"] == ["must"]
+    assert set(schema["properties"]) == {"must", "note"}
 
 
 def test_nested_typeddict_list_is_inlined() -> None:
@@ -386,9 +429,20 @@ def test_missing_annotation_adds_nothing() -> None:
     assert derive_output_schema(returns_unannotated) is None
 
 
-def test_recursive_annotation_adds_nothing() -> None:
-    """A self-referential model stops instead of looping."""
+def test_recursive_annotation_adds_nothing(monkeypatch) -> None:
+    """The cycle check stops the descent instead of hitting the recursion limit."""
+    calls = 0
+    original = output_schema._type_hints
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(output_schema, "_type_hints", counting)
+
     assert derive_output_schema(returns_node) is None
+    assert calls <= 3
 
 
 def test_tool_from_function_is_off_by_default() -> None:
