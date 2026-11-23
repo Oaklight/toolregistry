@@ -21,7 +21,8 @@ registry = ToolRegistry(derive_output_schemas=True)
 
 Every function registered through `registry.register()` is converted with
 `Tool.from_function(..., derive_output_schema=True)`. Class registration and
-callable overrides use the same path.
+callable overrides use the same path. A callable instance derives from the
+return annotation on `type(obj).__call__`.
 
 Enable it for one tool when you build the `Tool` directly:
 
