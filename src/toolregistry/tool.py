@@ -332,13 +332,18 @@ class ToolMetadata:
             full output is stored in a private per-run directory only when
             the registry enables ``persist_large_results``; otherwise
             nothing is written. Only effective when executed through
-            ``ToolRegistry.execute_tool_calls()``. None means no limit.
+            ``ToolRegistry.execute_tool_calls()``. ``None`` means no
+            tool-specific limit; the registry default
+            (:data:`toolregistry.llm.truncation.DEFAULT_MAX_RESULT_SIZE`)
+            still applies unless the registry was built with
+            ``default_max_result_size=None``.
         max_result_tokens: Maximum result size in tokens. Converted to
             characters with a fixed 4-characters-per-token estimate (see
             :data:`toolregistry.llm.truncation.CHARS_PER_TOKEN`); this is an
             order-of-magnitude guard, not a tokenizer. When both this and
             :attr:`max_result_size` are set, the smaller effective limit
-            wins. None means no limit. Appended last so positional
+            wins. ``None`` means no tool-specific token limit; the registry
+            default still applies. Appended last so positional
             construction of this dataclass keeps working.
         unresolved_parameters: Names of parameters whose annotation could
             not be resolved to a schema (or resolved to a type with no

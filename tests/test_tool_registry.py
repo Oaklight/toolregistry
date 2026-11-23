@@ -6,6 +6,7 @@ import warnings
 import pytest
 
 from toolregistry import Tool, ToolRegistry
+from toolregistry.llm.truncation import DEFAULT_MAX_RESULT_SIZE
 from toolregistry.tool import ToolMetadata, ToolTag
 
 
@@ -680,6 +681,79 @@ class TestToolRegistryResultTruncation:
         # 50 chars < 1000 limit, so no truncation
         result = results["call_override"]
         assert "Truncated" not in result.result
+
+    def test_registry_default_cap_is_applied(self):
+        """A registry without explicit limits uses the documented default."""
+        registry = ToolRegistry(name="default_cap")
+        size = DEFAULT_MAX_RESULT_SIZE + 1000
+
+        def verbose_output() -> str:
+            """Return a string just over the default budget."""
+            return "a" * size
+
+        registry.register(verbose_output)
+        results = registry.execute_tool_calls(
+            [
+                {
+                    "id": "call_default",
+                    "type": "function",
+                    "function": {"name": "verbose_output", "arguments": "{}"},
+                }
+            ]
+        )
+
+        result = results["call_default"].result
+        assert "Truncated" in result
+        assert f"{size} chars" in result
+
+    def test_registry_default_cap_can_be_disabled(self):
+        """An explicit ``None`` keeps the old unlimited behaviour."""
+        registry = ToolRegistry(name="no_default_cap", default_max_result_size=None)
+
+        def verbose_output() -> str:
+            """Return a string just over the default budget."""
+            return "b" * (DEFAULT_MAX_RESULT_SIZE + 1000)
+
+        registry.register(verbose_output)
+        results = registry.execute_tool_calls(
+            [
+                {
+                    "id": "call_unlimited",
+                    "type": "function",
+                    "function": {"name": "verbose_output", "arguments": "{}"},
+                }
+            ]
+        )
+
+        result = results["call_unlimited"].result
+        assert "Truncated" not in result
+        assert len(result) == DEFAULT_MAX_RESULT_SIZE + 1000
+
+    def test_token_default_can_be_smaller_than_character_default(self):
+        """A token budget still wins when it is stricter than the default."""
+        registry = ToolRegistry(
+            name="token_default",
+            default_max_result_tokens=100,
+        )
+
+        def verbose_output() -> str:
+            """Return a string larger than the token budget."""
+            return "c" * 2000
+
+        registry.register(verbose_output)
+        results = registry.execute_tool_calls(
+            [
+                {
+                    "id": "call_tokens",
+                    "type": "function",
+                    "function": {"name": "verbose_output", "arguments": "{}"},
+                }
+            ]
+        )
+
+        result = results["call_tokens"].result
+        assert "Truncated" in result
+        assert "2000 chars" in result
 
 
 class TestThinkAugmentedExecution:
