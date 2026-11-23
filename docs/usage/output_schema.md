@@ -66,6 +66,9 @@ tool = Tool.from_function(
 - Containers: `list[T]`, `dict[str, T]`, `tuple[...]`, including a fixed tuple
 - Abstract containers: `Mapping[str, T]`, `MutableMapping[str, T]`,
   `Sequence[T]`, `Iterable[T]`, and `Collection[T]`
+- `Mapping` classes and subclasses, bare or parameterized; a one-argument form
+  such as `Counter[str]` publishes an open object because its value shape is
+  unknown
 - `Literal[...]` and `Enum` subclasses
 - `Optional[...]` / `T | None` as nullable; a bare `None` return publishes no
   schema
