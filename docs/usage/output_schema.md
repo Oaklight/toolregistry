@@ -78,6 +78,12 @@ Nested `TypedDict` and dataclass definitions are inlined. A pydantic model's
 does not follow `$ref` still receives a complete schema. A recursive shape
 produces no schema instead of looping.
 
+Only a `Mapping` subclass derives an object schema. A concrete iterable class
+such as `class MyList(list)` publishes no schema, because the annotation alone
+does not fix how the tool encodes it; declare `extra["output_schema"]` when the
+shape is known. A parameterized `Mapping` subclass such as
+`OrderedDict[str, int]` derives the same open object as `dict[str, int]`.
+
 ## Semantic decisions
 
 ### Closed and open objects
