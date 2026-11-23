@@ -24,6 +24,16 @@ ADMIN_AUTH_JS = (
     files("toolregistry.admin").joinpath("js/core/auth.js").read_text(encoding="utf-8")
 )
 
+ADMIN_UI_JS = (
+    files("toolregistry.admin").joinpath("js/core/ui.js").read_text(encoding="utf-8")
+)
+
+ADMIN_EXTENSIONS_JS = (
+    files("toolregistry.admin")
+    .joinpath("js/core/extensions.js")
+    .read_text(encoding="utf-8")
+)
+
 ADMIN_I18N_JS = (
     files("toolregistry.admin").joinpath("js/core/i18n.js").read_text(encoding="utf-8")
 )
@@ -302,3 +312,320 @@ def test_more_languages_render_a_menu(tmp_path: Path) -> None:
     assert "<select" in observed["lang"]
     assert 'value="fr"' in observed["lang"]
     assert 'id="auth-lang"' not in observed["lang"]
+
+
+def test_register_ui_copy_is_translated_and_wired() -> None:
+    """The new Sources hints exist in both dictionaries and are used by the UI."""
+    i18n = (
+        files("toolregistry.admin")
+        .joinpath("js/core/i18n.js")
+        .read_text(encoding="utf-8")
+    )
+    for key in (
+        "register.overridesKept",
+        "register.stdioNeedsAuth",
+        "register.stdioHidden",
+        "register.privateHostsRefused",
+    ):
+        assert i18n.count(f"'{key}':") == 2, key
+
+    register_js = (
+        files("toolregistry.admin")
+        .joinpath("js/tabs/register.js")
+        .read_text(encoding="utf-8")
+    )
+    assert "preserved_overrides" in register_js
+    assert "register.overridesKept" in register_js
+    assert "register.stdioNeedsAuth" in register_js
+    assert "register.stdioHidden" in register_js
+    assert "sourcePrefill" in register_js
+    assert "updateStdioHint" in register_js
+    assert "register.privateHostsRefused" in register_js
+    assert "updatePrivateHostsHint" in register_js
+    assert "register-private-hint" in register_js
+
+
+_REGISTER_PREFILL_HARNESS = """
+const vm = require('vm');
+const fs = require('fs');
+
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const scenario = process.argv[3];
+
+const fields = {};
+function field(id) {
+  if (!fields[id]) {
+    const f = { value: '', style: { display: 'none' }, textContent: '' };
+    Object.defineProperty(f, 'innerHTML', {
+      set() { throw new Error('innerHTML used'); },
+    });
+    fields[id] = f;
+  }
+  return fields[id];
+}
+
+globalThis.document = { getElementById: (id) => field(id) };
+globalThis.t = (key) => (key === 'register.stdioHidden' ? 'HINT {command}' : key);
+globalThis.switchTab = () => {};
+
+vm.runInContext(code, vm.createContext(globalThis));
+globalThis.openAddSource = () => {};
+globalThis.renderRegisterForm = () => {};
+
+const detail =
+  scenario === 'xss' ? 'stdio:<img/src=x/onerror=alert(1)>'
+  : scenario === 'stdio' ? 'stdio:uvx --api-key SECRET'
+  : scenario === 'http' ? 'http://example.com/mcp'
+  : '';
+globalThis.openRegisterFromSource({
+  dataset: { kind: 'mcp', detail, namespace: scenario === 'stdio' ? 'ns' : '' },
+});
+
+const hint = field('rf-stdio-prefill-hint');
+process.stdout.write(JSON.stringify({
+  command: field('rf-command').value,
+  url: field('rf-url').value,
+  namespace: field('rf-namespace').value,
+  hintDisplay: hint.style.display,
+  hintText: hint.textContent,
+}));
+"""
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        (
+            "stdio",
+            {
+                "command": "",
+                "url": "",
+                "namespace": "ns",
+                "hintDisplay": "",
+                "hintText": "HINT uvx",
+            },
+        ),
+        (
+            "xss",
+            {
+                "command": "",
+                "url": "",
+                "namespace": "",
+                "hintDisplay": "",
+                "hintText": "HINT <img/src=x/onerror=alert(1)>",
+            },
+        ),
+        (
+            "http",
+            {
+                "command": "",
+                "url": "http://example.com/mcp",
+                "namespace": "",
+                "hintDisplay": "none",
+                "hintText": "",
+            },
+        ),
+        (
+            "empty",
+            {
+                "command": "",
+                "url": "",
+                "namespace": "",
+                "hintDisplay": "none",
+                "hintText": "",
+            },
+        ),
+    ],
+)
+def test_register_stdio_prefill_keeps_the_command_empty(
+    tmp_path: Path, scenario: str, expected: dict
+) -> None:
+    """A masked stdio detail must not become a command value or unsafe HTML."""
+    code_path = tmp_path / "register.js"
+    code_path.write_text(
+        files("toolregistry.admin")
+        .joinpath("js/tabs/register.js")
+        .read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    harness = tmp_path / "harness_prefill.js"
+    harness.write_text(_REGISTER_PREFILL_HARNESS, encoding="utf-8")
+
+    result = subprocess.run(
+        [NODE, str(harness), str(code_path), scenario],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == expected
+    # The stdio detail carries a secret argument on purpose: neither the
+    # command field nor the hint may reproduce it.
+    assert "SECRET" not in result.stdout
+
+
+def test_register_prefill_never_copies_source_detail_into_command() -> None:
+    """``source_detail`` carries only the program name; it must not fill the field."""
+    register_js = (
+        files("toolregistry.admin")
+        .joinpath("js/tabs/register.js")
+        .read_text(encoding="utf-8")
+    )
+    assert "set('rf-command', detail.slice" not in register_js
+
+
+_ESCAPE_HARNESS = """
+const vm = require('vm');
+const fs = require('fs');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const payloads = JSON.parse(process.argv[3]);
+vm.runInContext(code, vm.createContext(globalThis));
+
+const entities = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+const results = payloads.map((payload) => {
+  const attr = escapeJsAttr(payload);
+  // The HTML parser decodes entity references once before the handler is
+  // compiled; this is the value the JS parser receives.
+  const decoded = attr.replace(/&(amp|lt|gt|quot|#39);/g, (_, key) => entities[key]);
+  globalThis.PWNED = 0;
+  try {
+    new Function(
+      'showToolDetailModal',
+      "showToolDetailModal('" + decoded + "')"
+    )(() => {});
+  } catch (error) {
+    // A syntax error also proves the payload did not execute.
+  }
+  return { payload, attr, decoded, pwned: globalThis.PWNED };
+});
+
+const html = escapeHtml(
+  ['&', '<', '>', String.fromCharCode(34), String.fromCharCode(39)].join('')
+);
+console.log(JSON.stringify({ results, html }));
+"""
+
+
+def _escape_helpers_source() -> str:
+    """Return the escape helpers from ``ui.js`` for the Node harness."""
+    start = ADMIN_UI_JS.index("// ============== Utilities ==============")
+    end = ADMIN_UI_JS.index("// Prose that names a tool", start)
+    return ADMIN_UI_JS[start:end]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "x&#39;);globalThis.PWNED=1;//",
+        "x&quot;);globalThis.PWNED=1;//",
+        "</script><img src=x onerror=globalThis.PWNED=1>",
+        "x');globalThis.PWNED=1;//",
+    ],
+)
+def test_inline_handler_escaping_survives_entity_decoding(
+    tmp_path: Path, payload: str
+) -> None:
+    """A handler argument is parsed as HTML and then as JS; both layers escape.
+
+    ``escapeJs`` alone leaves ``&#39;`` untouched, and the HTML parser turns it
+    into a quote before the handler compiles. ``escapeJsAttr`` encodes the
+    entity as well.
+    """
+    code_path = tmp_path / "ui_helpers.js"
+    code_path.write_text(_escape_helpers_source(), encoding="utf-8")
+    harness = tmp_path / "escape_harness.js"
+    harness.write_text(_ESCAPE_HARNESS, encoding="utf-8")
+
+    result = subprocess.run(
+        [NODE, str(harness), str(code_path), json.dumps([payload])],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    entry = data["results"][0]
+    assert entry["pwned"] == 0, entry
+    assert "'" not in entry["attr"], entry
+    assert '"' not in entry["attr"], entry
+    assert data["html"] == "&amp;&lt;&gt;&quot;&#39;"
+
+
+_GROUP_HARNESS = """
+const vm = require('vm');
+const fs = require('fs');
+
+const i18nPath = process.argv[2];
+const extensionsPath = process.argv[3];
+
+const stored = {};
+const context = {
+  window: {},
+  console,
+  localStorage: {
+    getItem: (k) => (Object.prototype.hasOwnProperty.call(stored, k) ? stored[k] : null),
+    setItem: (k, v) => { stored[k] = String(v); },
+  },
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(i18nPath, 'utf8'), context, { filename: i18nPath });
+vm.runInContext(fs.readFileSync(extensionsPath, 'utf8'), context, { filename: extensionsPath });
+
+function label(key) {
+  return vm.runInContext(
+    `AdminExtensions.groupLabel(${JSON.stringify(key)})`, context);
+}
+
+const en = {
+  manage: label('manage'),
+  observe: label('observe'),
+  unknown: label('unknown-section'),
+};
+
+vm.runInContext('currentLang = "zh"', context);
+const zh = {
+  manage: label('manage'),
+  observe: label('observe'),
+  unknown: label('unknown-section'),
+};
+
+vm.runInContext(
+  'currentLang = "en";'
+  + 'I18N.en["group.custom"] = "Group custom";'
+  + 'I18N.en["nav.custom"] = "Nav custom";',
+  context);
+const precedence = label('custom');
+
+console.log(JSON.stringify({ en, zh, precedence }));
+"""
+
+
+def test_extension_group_reuses_shell_section_labels(tmp_path: Path) -> None:
+    """nav.group = "manage" renders the built-in Manage label in both languages."""
+    i18n_path = tmp_path / "i18n.js"
+    i18n_path.write_text(ADMIN_I18N_JS, encoding="utf-8")
+    extensions_path = tmp_path / "extensions.js"
+    extensions_path.write_text(ADMIN_EXTENSIONS_JS, encoding="utf-8")
+    harness = tmp_path / "group_harness.js"
+    harness.write_text(_GROUP_HARNESS, encoding="utf-8")
+
+    result = subprocess.run(
+        [NODE, str(harness), str(i18n_path), str(extensions_path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "en": {
+            "manage": "Manage",
+            "observe": "Observe",
+            "unknown": "unknown-section",
+        },
+        "zh": {
+            "manage": "\u7ba1\u7406",
+            "observe": "\u89c2\u5bdf",
+            "unknown": "unknown-section",
+        },
+        "precedence": "Group custom",
+    }
