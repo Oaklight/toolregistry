@@ -61,8 +61,10 @@ tool = Tool.from_function(
 
 - 基本类型：`str`、`int`、`float`、`bool`
 - 容器：`list[T]`、`dict[str, T]`、`tuple[...]`，包括定长元组
+- 抽象容器：`Mapping[str, T]`、`MutableMapping[str, T]`、`Sequence[T]`、
+  `Iterable[T]` 与 `Collection[T]`
 - `Literal[...]` 与 `Enum` 子类
-- `None` 与 `Optional[...]` / `T | None`，表示为可空
+- `Optional[...]` / `T | None`，表示为可空；裸 `None` 返回值不发布 schema
 - `TypedDict`，包括 `total=False` 与 `NotRequired`
 - dataclass，包括带默认值的字段
 - pydantic `BaseModel` 子类
