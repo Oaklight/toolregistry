@@ -73,6 +73,11 @@ tool = Tool.from_function(
 返回前解析，因此不跟随 `$ref` 的客户端也能拿到完整 schema。递归结构不会生成
 schema，也不会陷入循环。
 
+只有 `Mapping` 子类会推导成对象 schema。`class MyList(list)` 这样的具体可迭代类
+不产出 schema，因为仅凭注解无法确定工具的 JSON 编码；如果形状已知，请显式声明
+`extra["output_schema"]`。`OrderedDict[str, int]` 这样的参数化 `Mapping` 子类会
+推导出与 `dict[str, int]` 相同的开放对象。
+
 ## 语义约定
 
 ### 封闭对象与开放对象
