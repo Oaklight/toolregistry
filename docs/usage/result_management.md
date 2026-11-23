@@ -145,7 +145,11 @@ token 按每 token 4 个字符的固定估算换算为字符
 存入私有的按运行目录（目录权限 `0700`，文件权限 `0600`）。头部携带不透明 id
 （`res_<32 hex>`，128 位随机数），内置的 `read_result(id, offset=0, limit=8000)`
 工具可分页读取存储的文本。结果在 24 小时后过期；目录总量上限 64 MiB，超出时按
-最旧优先淘汰，刚写入的文件不会被淘汰，即使它本身就超过配额。
+最旧优先淘汰，刚写入的文件不会被淘汰，即使它本身就超过配额。Phase 0 的淘汰是
+全局且不考虑作用域的：一个租户写入足够多结果时，可能淘汰另一个租户仍存活的结果；
+按租户与按会话的配额属于 Phase 1。读取时会比较 blob 大小与元数据，截断或未完整
+恢复的文件会报告为 corrupt，而不会被当作完整内容返回；记录的 SHA-256 可供调用方
+显式做完整校验，但不会在每次分页时重算。
 
 不启用该选项时不会写入磁盘：截断结果只包含截断后的文本。
 
@@ -189,6 +193,11 @@ with use_result_scope(ResultScope(tenant="tenant-a", session="session-1")):
 `res_<12 hex>` 文件没有归属元数据，默认拒绝读取；`ResultStore(allow_legacy=True)`
 允许无作用域调用方继续读取它们。
 
+内置 `read_result` 工具只做本地文件 I/O。注册表在派发线程上解析作用域，在 worker
+中绑定该作用域，并始终使用线程后端运行它。这样 `use_result_scope()` 对工具调用
+同样有效，也避免把注册表及其锁送进进程池。服务端适配器仍应绑定 provider 或按请求
+处理器，而不是依赖环境状态。
+
 ## 编程接口
 
 截断模块也可直接使用：
@@ -223,7 +232,8 @@ print(str(result))            # 头部给出 id，绝不给出路径
 `default_result_store()`；传入自己的 `ResultStore` 可指定目录、TTL 与配额，结果
 属于某个租户或会话时再传入 `scope=`。`ResultStore` 还提供 `put_result()`，返回
 包含 id、大小、SHA-256、内容类型、工具名、归属与时间戳的 `ResultInfo`，以及
-`stat(result_id, scope=...)`，读取同样的元数据但不会延长空闲 TTL。注册表内置的
+`stat(result_id, scope=...)`，读取同样的元数据但不会延长空闲 TTL。
+`put_result()` 是子类扩展点，`put()` 只是委托给它的兼容包装。注册表内置的
 `read_result` 只读取该注册表存储的结果，因此直接调用 `truncate_result` 时必须用
 同一个 store 读回。
 
