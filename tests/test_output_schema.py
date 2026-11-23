@@ -96,6 +96,21 @@ def returns_list() -> list[str]:
     return []
 
 
+def returns_bare_list() -> list:
+    """Return an unparameterized list."""
+    return []
+
+
+def returns_bare_dict() -> dict:
+    """Return an unparameterized dictionary."""
+    return {}
+
+
+def returns_bare_tuple() -> tuple:
+    """Return an unparameterized tuple."""
+    return ()
+
+
 def returns_dict() -> dict[str, int]:
     """Return a mapping."""
     return {}
@@ -221,6 +236,9 @@ def test_nested_dataclass_list() -> None:
         (returns_int, {"type": "integer"}),
         (returns_bool, {"type": "boolean"}),
         (returns_list, {"type": "array", "items": {"type": "string"}}),
+        (returns_bare_list, {"type": "array"}),
+        (returns_bare_dict, {"type": "object"}),
+        (returns_bare_tuple, {"type": "array"}),
         (
             returns_dict,
             {"type": "object", "additionalProperties": {"type": "integer"}},
