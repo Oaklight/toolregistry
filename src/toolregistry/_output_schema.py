@@ -6,8 +6,10 @@ schema.  Callers publish the result only when it is a mapping, so a tool
 without a usable return annotation keeps yesterday's behaviour (no
 ``outputSchema``).
 
-Supported annotations are primitives, ``list``/``dict``/``tuple``
-containers, ``Literal``, ``Enum``, ``TypedDict`` (including ``Required`` and
+Supported annotations are primitives,
+``list``/``dict``/``tuple`` containers and their ``collections.abc``
+counterparts (``Mapping``, ``Sequence``, ``Iterable``, ``Collection``),
+``Literal``, ``Enum``, ``TypedDict`` (including ``Required`` and
 ``NotRequired``), dataclasses, and pydantic models.  Nested ``TypedDict`` and
 dataclass definitions are inlined.  References emitted by a pydantic model
 ``$defs`` are resolved before the schema is returned, because some MCP
@@ -22,7 +24,13 @@ import dataclasses
 import inspect
 import types
 import typing
-from collections.abc import Mapping
+from collections.abc import (
+    Collection,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from enum import Enum
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -216,12 +224,24 @@ def _required_marker(hint: Any) -> bool | None:
 
 
 def _required_keys(typed_dict: Any, hints: Mapping[str, Any]) -> set[str]:
-    """Return the keys a ``TypedDict`` declares as required."""
+    """Return the keys a ``TypedDict`` declares as required.
+
+    ``__required_keys__`` records each base class's own ``total`` flag, which
+    the leaf ``__total__`` cannot express for inherited keys.  It is not
+    reliable for a ``NotRequired[T]``/``Required[T]`` wrapper hidden behind
+    ``from __future__ import annotations``, so a resolved marker wins first
+    and ``__required_keys__`` is the fallback.
+    """
+    declared = set(getattr(typed_dict, "__required_keys__", ()) or ())
     total = bool(getattr(typed_dict, "__total__", True))
     required: set[str] = set()
     for name, hint in hints.items():
         marker = _required_marker(hint)
-        if (total if marker is None else marker) and name in hints:
+        if marker is None:
+            is_required = name in declared if declared else total
+        else:
+            is_required = marker
+        if is_required:
             required.add(name)
     return required
 
@@ -416,16 +436,20 @@ def _class_schema(
         return {"type": "array"}
     if cls is dict:
         return {"type": "object"}
-    if issubclass(cls, Enum):
-        return _literal_schema(tuple(cls))
     if cls in _PRIMITIVE_TYPES:
         return {"type": _PRIMITIVE_TYPES[cls]}
+    if issubclass(cls, Enum):
+        return _literal_schema(tuple(cls))
     if _is_typeddict(cls):
         return _typeddict_schema(cls, localns, stack)
     if dataclasses.is_dataclass(cls):
         return _dataclass_schema(cls, localns, stack)
     if _is_pydantic_model(cls):
         return _pydantic_schema(cls)
+    if issubclass(cls, Mapping):
+        return {"type": "object"}
+    if issubclass(cls, Iterable):
+        return {"type": "array"}
     return None
 
 
@@ -497,10 +521,10 @@ def _container_schema(
     localns: Mapping[str, Any] | None,
     stack: frozenset[Any],
 ) -> dict[str, Any] | None:
-    """Convert a list, dict, or tuple annotation."""
-    if origin is list:
+    """Convert a container annotation into a JSON Schema node."""
+    if origin is list or origin in (Sequence, Iterable, Collection):
         return _list_schema(args, localns, stack)
-    if origin is dict:
+    if origin is dict or origin in (Mapping, MutableMapping):
         return _dict_schema(args, localns, stack)
     if origin is tuple:
         return _tuple_schema(args, localns, stack)
@@ -551,8 +575,12 @@ def derive_output_schema(
 
     Returns:
         A JSON Schema mapping for the return annotation, or ``None`` when the
-        annotation is missing, unresolvable, unsupported, recursive, or
-        empty.  ``None`` means the caller must not publish an output schema.
+        annotation is missing, unresolvable, unsupported, recursive, empty,
+        or a bare ``None``.  A tool that returns nothing publishes no schema:
+        a null-only contract adds no information, and MCP servers that
+        declare one are expected to emit ``structuredContent`` that a null
+        result does not have.  An explicit ``extra["output_schema"]`` still
+        opts in.
     """
     if not callable(func):
         return None
@@ -562,7 +590,10 @@ def derive_output_schema(
     annotation = hints.get("return", inspect.Signature.empty)
     if annotation is inspect.Signature.empty:
         return None
-    schema = _convert(_unwrap(annotation), localns, frozenset())
+    annotation = _unwrap(annotation)
+    if annotation is None or annotation is type(None):
+        return None
+    schema = _convert(annotation, localns, frozenset())
     if not schema:
         return None
     return schema
