@@ -5,6 +5,7 @@ This module tests the AdminServer, TokenAuth, and REST API endpoints.
 
 import asyncio
 import dataclasses
+import http.client
 import json
 import re
 import shutil
@@ -892,6 +893,71 @@ class TestAdminCORS:
             assert response.status == 204
             assert response.headers.get("Access-Control-Allow-Origin") is None
 
+    def test_unknown_path_keeps_cors_and_security_headers(self, info) -> None:
+        """An error page still leaves through the after-request hooks."""
+        req = urllib.request.Request(f"{info.url}/api/does-not-exist")
+        req.add_header("Origin", info.url)
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+
+        assert exc_info.value.code == 404
+        headers = exc_info.value.headers
+        assert headers.get("Access-Control-Allow-Origin") == info.url
+        assert headers.get("Vary") == "Origin"
+        assert headers.get("X-Frame-Options") == "DENY"
+        assert "frame-ancestors 'none'" in headers.get("Content-Security-Policy", "")
+
+    def test_method_not_allowed_keeps_security_headers(self, info) -> None:
+        """A 405 is a response too, so the hooks apply to it."""
+        req = urllib.request.Request(
+            f"{info.url}/api/tools",
+            method="DELETE",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+
+        assert exc_info.value.code == 405
+        assert exc_info.value.headers.get("X-Frame-Options") == "DENY"
+        assert exc_info.value.headers.get("Vary") == "Origin"
+
+
+class TestReadRejectionHeaders:
+    """A body refused while reading still gets the panel's headers."""
+
+    @pytest.fixture
+    def info(self):
+        """Start an unauthenticated admin server."""
+        registry = ToolRegistry()
+        server = AdminServer(registry, port=18113)
+        info = server.start()
+        time.sleep(0.1)
+        yield info
+        server.stop()
+
+    def test_oversized_body_keeps_cors_and_security_headers(self, info) -> None:
+        """0.8.0 runs after-hooks before a read rejection is written."""
+        origin = f"http://127.0.0.1:{info.port}"
+        conn = http.client.HTTPConnection("127.0.0.1", info.port, timeout=5)
+        try:
+            conn.putrequest("POST", "/api/tools")
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Content-Length", str(2_000_000))
+            conn.putheader("Origin", origin)
+            conn.endheaders()
+            response = conn.getresponse()
+            headers = response.headers
+            assert response.status == 413
+            assert headers.get("Access-Control-Allow-Origin") == origin
+            assert headers.get("Vary") == "Origin"
+            assert headers.get("X-Frame-Options") == "DENY"
+            assert "frame-ancestors 'none'" in headers.get(
+                "Content-Security-Policy", ""
+            )
+            assert headers.get("X-Request-Id")
+        finally:
+            conn.close()
+
 
 class TestAdminHostValidation:
     """A DNS-rebinding page cannot reach the API through its own Host name."""
@@ -928,9 +994,10 @@ class TestAdminHostValidation:
         req.add_header("Host", f"rebind.attacker:{info.port}")
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
-        assert exc_info.value.code == 403
+        assert exc_info.value.code == 421
         body = json.loads(exc_info.value.read().decode())
-        assert body["error"] == "Forbidden"
+        assert body["error"] == "Misdirected Request"
+        assert exc_info.value.headers.get("X-Frame-Options") == "DENY"
 
     def test_forged_host_with_matching_origin_is_rejected(self, info) -> None:
         """The rebinding case: Origin and Host agree on the attacker name."""
@@ -940,7 +1007,7 @@ class TestAdminHostValidation:
         req.add_header("Origin", f"http://{attacker}")
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
-        assert exc_info.value.code == 403
+        assert exc_info.value.code == 421
 
     def test_state_change_from_forged_host_is_rejected(self, info) -> None:
         req = urllib.request.Request(
@@ -954,7 +1021,7 @@ class TestAdminHostValidation:
         )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
-        assert exc_info.value.code == 403
+        assert exc_info.value.code == 421
 
     def test_localhost_host_is_accepted(self, info) -> None:
         req = urllib.request.Request(f"{info.url}/api/tools")
