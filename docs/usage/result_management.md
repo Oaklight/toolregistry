@@ -47,15 +47,22 @@ registry.register(
 
 ### 注册表全局默认值
 
-通过 `ToolRegistry` 设置所有工具的默认限制：
+未显式设置限制的注册表会应用
+`toolregistry.llm.truncation.DEFAULT_MAX_RESULT_SIZE`：64,000 个字符，按文档中的
+估算约为 16k token。传入 `None` 可恢复旧版本的“不限制”行为：
 
 ```python
 from toolregistry import ToolRegistry
 
+# 显式设置更大或更小的默认值
 registry = ToolRegistry(default_max_result_size=5000)
+
+# 不设默认上限：只应用工具级限制
+registry = ToolRegistry(default_max_result_size=None)
 ```
 
-单工具的 `max_result_size` 优先于注册表默认值。未设置 `max_result_size`（默认 `None`）的工具不受限制，除非注册表设置了默认值。
+单工具的 `max_result_size` 优先于注册表默认值。工具将 `max_result_size` 留为
+`None` 时会使用注册表默认值；除非修改，该默认值为 64,000 个字符。
 
 ### Token 预算
 
@@ -71,7 +78,9 @@ ToolMetadata(max_result_tokens=1000)
 token 按每 token 4 个字符的固定估算换算为字符
 （`toolregistry.llm.truncation.CHARS_PER_TOKEN`）。这是一个数量级保护，而不是
 分词器；需要精确截断时请使用 `max_result_size`。工具级取值覆盖该字段的注册表
-默认值；字符限制与 token 限制同时存在时，取较小者。
+默认值；字符限制与 token 限制同时存在时，取较小者。默认的 64,000 字符上限也是
+字符限制，因此高于 16k 的 token 预算不会产生额外效果，除非提高或关闭默认字符
+上限。
 
 ## 截断策略
 
