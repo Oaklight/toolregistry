@@ -83,6 +83,24 @@ class ExplicitRequired(TypedDict, total=False):
     note: str
 
 
+class StrictBase(TypedDict):
+    p: int
+
+
+class RelaxedRedeclare(StrictBase, total=False):
+    p: NotRequired[int]
+    q: int
+
+
+class LooseBase(TypedDict, total=False):
+    a: int
+
+
+class TightRedeclare(LooseBase):
+    a: Required[int]
+    b: int
+
+
 @dataclass
 class Point:
     x: int
@@ -199,6 +217,16 @@ def returns_explicit_required() -> ExplicitRequired:
     return {"must": ""}
 
 
+def returns_relaxed_redeclare() -> RelaxedRedeclare:
+    """Return a required key redeclared as optional in the child."""
+    return {"q": 0}
+
+
+def returns_tight_redeclare() -> TightRedeclare:
+    """Return an optional key redeclared as required in the child."""
+    return {"a": 0, "b": 0}
+
+
 def returns_mapping() -> Mapping[str, int]:
     """Return an abstract mapping."""
     return {}
@@ -222,6 +250,21 @@ def returns_iterable() -> Iterable[str]:
 def returns_collection() -> Collection[float]:
     """Return an abstract collection."""
     return []
+
+
+def returns_bytes() -> bytes:
+    """Return bytes, which encode as a base64 string."""
+    return b""
+
+
+def returns_set() -> set[str]:
+    """Return a set, which the JSON encoder stringifies."""
+    return set()
+
+
+def returns_frozenset() -> frozenset[int]:
+    """Return a frozenset, which the JSON encoder stringifies."""
+    return frozenset()
 
 
 def returns_missing():
@@ -312,6 +355,24 @@ def test_typeddict_resolved_required_marker_beats_leaf_total() -> None:
     assert set(schema["properties"]) == {"must", "note"}
 
 
+def test_typeddict_child_can_redeclare_a_key_as_optional() -> None:
+    """A ``NotRequired`` redeclaration overrides the base's required key."""
+    schema = derive_output_schema(returns_relaxed_redeclare)
+
+    assert schema is not None
+    assert "required" not in schema
+    assert set(schema["properties"]) == {"p", "q"}
+
+
+def test_typeddict_child_can_redeclare_a_key_as_required() -> None:
+    """A ``Required`` redeclaration overrides the base's optional key."""
+    schema = derive_output_schema(returns_tight_redeclare)
+
+    assert schema is not None
+    assert schema["required"] == ["a", "b"]
+    assert set(schema["properties"]) == {"a", "b"}
+
+
 def test_nested_typeddict_list_is_inlined() -> None:
     """A list of nested models carries the object schema in ``items``."""
     schema = derive_output_schema(returns_user)
@@ -395,6 +456,12 @@ def test_plain_return_annotations(func, expected) -> None:
 def test_none_return_annotation_adds_nothing() -> None:
     """A tool that returns nothing publishes no null-only schema."""
     assert derive_output_schema(returns_none) is None
+
+
+@pytest.mark.parametrize("func", [returns_bytes, returns_set, returns_frozenset])
+def test_concrete_non_mapping_iterables_add_nothing(func) -> None:
+    """A concrete iterable does not imply the JSON shape the encoder produces."""
+    assert derive_output_schema(func) is None
 
 
 def test_pydantic_model_is_inlined() -> None:
