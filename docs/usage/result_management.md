@@ -213,7 +213,9 @@ controls the contract: `"optional"` (default) accepts unscoped writes,
 missing scope under a required policy raises instead of writing a public
 result. Pre-ADR-004 `res_<12 hex>` files carry no owner metadata and are denied
 by default; `ResultStore(allow_legacy=True)` keeps them readable for an
-unscoped caller.
+unscoped caller. The flag is process-wide, so every unscoped caller can read
+every legacy blob; enable it only while no unscoped request path exists, and
+turn it off after the migration window.
 
 The built-in `read_result` tool is local file I/O. The registry resolves its
 scope on the dispatching thread, binds that scope in the worker, and always
@@ -261,8 +263,9 @@ content type, tool name, owner, and timestamps, and `stat(result_id,
 scope=...)`, which reads that metadata without extending the idle TTL.
 `put_result()` is the extension point for subclasses; `put()` remains a
 compatibility wrapper that delegates to it. A registry's built-in `read_result`
-reads only results stored by that registry, so a direct `truncate_result` call
-must be read back through the same store you passed it.
+reads only from that registry's store (or from an injected store it shares with
+other registries), so a direct `truncate_result` call must be read back through
+the same store you passed it.
 
 ### TruncatedResult Fields
 
