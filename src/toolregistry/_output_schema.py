@@ -223,55 +223,23 @@ def _required_marker(hint: Any) -> bool | None:
     return None
 
 
-def _typeddict_bases(typed_dict: Any) -> list[Any]:
-    """Return the ``TypedDict`` bases of *typed_dict*.
-
-    A ``TypedDict`` class reports ``dict`` in ``__bases__``; its real bases
-    live in ``__orig_bases__``.
-    """
-    candidates = getattr(typed_dict, "__orig_bases__", None) or getattr(
-        typed_dict, "__bases__", ()
-    )
-    return [base for base in candidates if _is_typeddict(base)]
-
-
-def _typeddict_declared_keys(typed_dict: Any) -> set[str]:
-    """Return every key a ``TypedDict`` declares, including inherited keys."""
-    keys = set(getattr(typed_dict, "__annotations__", {}) or {})
-    for base in _typeddict_bases(typed_dict):
-        keys |= _typeddict_declared_keys(base)
-    return keys
-
-
-def _required_keys(
-    typed_dict: Any,
-    hints: Mapping[str, Any],
-    localns: Mapping[str, Any] | None,
-) -> set[str]:
+def _required_keys(typed_dict: Any, hints: Mapping[str, Any]) -> set[str]:
     """Return the keys a ``TypedDict`` declares as required.
 
-    Each class in the inheritance chain keeps its own ``total`` flag.  Walking
-    the bases applies that flag to the keys the base declares, which the leaf
-    ``__total__`` cannot express.  A resolved ``Required``/``NotRequired``
-    marker still wins over the flag, because ``__required_keys__`` itself is
-    unreliable when ``from __future__ import annotations`` hides the wrapper.
+    ``__required_keys__`` records every key's ``total`` provenance, including
+    keys inherited from a base with a different flag.  It is computed from the
+    raw annotation text, so ``from __future__ import annotations`` can hide a
+    ``NotRequired[T]``/``Required[T]`` wrapper from it.  A resolved marker
+    therefore wins; the set is the fallback for keys without a marker.
     """
+    declared = getattr(typed_dict, "__required_keys__", None)
+    if declared is None:
+        total = bool(getattr(typed_dict, "__total__", True))
+        declared = set(hints) if total else set()
     required: set[str] = set()
-    inherited: set[str] = set()
-    for base in _typeddict_bases(typed_dict):
-        inherited |= _typeddict_declared_keys(base)
-        base_hints = _type_hints(base, localns)
-        if base_hints is None:
-            required |= set(getattr(base, "__required_keys__", ()) or ())
-        else:
-            required |= _required_keys(base, base_hints, localns)
-
-    total = bool(getattr(typed_dict, "__total__", True))
     for name, hint in hints.items():
-        if name in inherited:
-            continue
         marker = _required_marker(hint)
-        is_required = total if marker is None else marker
+        is_required = name in declared if marker is None else marker
         if is_required:
             required.add(name)
     return required
@@ -289,7 +257,7 @@ def _typeddict_schema(
     if hints is None:
         return None
 
-    required = _required_keys(typed_dict, hints, localns)
+    required = _required_keys(typed_dict, hints)
 
     next_stack = stack | {typed_dict}
     properties: dict[str, Any] = {}
