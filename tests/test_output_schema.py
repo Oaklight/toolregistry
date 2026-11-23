@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 import sys
+from collections.abc import (
+    Collection,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal, cast
@@ -43,6 +50,22 @@ class Partial(TypedDict, total=False):
 class Node(TypedDict):
     value: int
     child: Node | None
+
+
+class OptionalBase(TypedDict, total=False):
+    opt: int
+
+
+class RequiredChild(OptionalBase):
+    req: str
+
+
+class MustBase(TypedDict):
+    must: str
+
+
+class RelaxedChild(MustBase, total=False):
+    extra: int
 
 
 @dataclass
@@ -141,6 +164,41 @@ def returns_none() -> None:
     return None
 
 
+def returns_required_child() -> RequiredChild:
+    """Return a child that adds a required key to an optional base."""
+    return {"req": ""}
+
+
+def returns_relaxed_child() -> RelaxedChild:
+    """Return a child that adds optional keys to a required base."""
+    return {"must": ""}
+
+
+def returns_mapping() -> Mapping[str, int]:
+    """Return an abstract mapping."""
+    return {}
+
+
+def returns_mutable_mapping() -> MutableMapping[str, bool]:
+    """Return a mutable abstract mapping."""
+    return {}
+
+
+def returns_sequence() -> Sequence[int]:
+    """Return an abstract sequence."""
+    return []
+
+
+def returns_iterable() -> Iterable[str]:
+    """Return an abstract iterable."""
+    return []
+
+
+def returns_collection() -> Collection[float]:
+    """Return an abstract collection."""
+    return []
+
+
 def returns_missing():
     """Return an annotation that cannot resolve."""
     raise NotImplementedError
@@ -191,6 +249,24 @@ def test_typeddict_total_false_has_no_required_keys() -> None:
     assert schema is not None
     assert "required" not in schema
     assert set(schema["properties"]) == {"note", "value"}
+
+
+def test_typeddict_child_of_optional_base_keeps_its_required_key() -> None:
+    """The leaf ``total`` flag does not erase a child's required key."""
+    schema = derive_output_schema(returns_required_child)
+
+    assert schema is not None
+    assert schema["required"] == ["req"]
+    assert set(schema["properties"]) == {"opt", "req"}
+
+
+def test_typeddict_optional_child_of_required_base_keeps_inherited_required() -> None:
+    """A ``total=False`` child still inherits required keys from its base."""
+    schema = derive_output_schema(returns_relaxed_child)
+
+    assert schema is not None
+    assert schema["required"] == ["must"]
+    assert set(schema["properties"]) == {"extra", "must"}
 
 
 def test_nested_typeddict_list_is_inlined() -> None:
@@ -255,12 +331,27 @@ def test_nested_dataclass_list() -> None:
         (returns_literal, {"enum": ["a", "b"], "type": "string"}),
         (returns_enum, {"enum": ["low", "high"], "type": "string"}),
         (returns_optional, {"type": ["string", "null"]}),
-        (returns_none, {"type": "null"}),
+        (
+            returns_mapping,
+            {"type": "object", "additionalProperties": {"type": "integer"}},
+        ),
+        (
+            returns_mutable_mapping,
+            {"type": "object", "additionalProperties": {"type": "boolean"}},
+        ),
+        (returns_sequence, {"type": "array", "items": {"type": "integer"}}),
+        (returns_iterable, {"type": "array", "items": {"type": "string"}}),
+        (returns_collection, {"type": "array", "items": {"type": "number"}}),
     ],
 )
 def test_plain_return_annotations(func, expected) -> None:
     """Primitive, container, literal, enum and nullable returns map directly."""
     assert derive_output_schema(func) == expected
+
+
+def test_none_return_annotation_adds_nothing() -> None:
+    """A tool that returns nothing publishes no null-only schema."""
+    assert derive_output_schema(returns_none) is None
 
 
 def test_pydantic_model_is_inlined() -> None:
