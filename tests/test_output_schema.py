@@ -110,6 +110,16 @@ class Adder:
 
 
 @dataclass
+class Fetcher:
+    """A dataclass callable whose field annotations are not a return type."""
+
+    url: str
+
+    def __call__(self, q: str) -> int:
+        return len(q) + len(self.url)
+
+
+@dataclass
 class Point:
     x: int
     y: float = 0.0
@@ -576,6 +586,11 @@ def test_explicit_output_schema_is_never_overridden() -> None:
 def test_callable_instance_derives_from_dunder_call() -> None:
     """A callable instance uses its ``__call__`` return annotation."""
     assert derive_output_schema(Adder()) == {"type": "integer"}
+
+
+def test_dataclass_callable_derives_from_dunder_call() -> None:
+    """Field annotations do not stand in for a return annotation."""
+    assert derive_output_schema(Fetcher(url="x")) == {"type": "integer"}
 
 
 def test_registry_switch_derives_for_callable_instance() -> None:

@@ -598,14 +598,18 @@ def derive_output_schema(
     """
     if not callable(func):
         return None
-    hints = _type_hints(func, localns)
-    # Python 3.14 returns an empty mapping for an instance instead of raising,
-    # so treat an empty result like a failed introspection for this fallback.
-    if not hints and not (
+    hints = _type_hints(func, localns) or {}
+    # A class or instance annotation describes attributes, never a return
+    # value, and Python 3.14 returns an empty mapping where older versions
+    # raise.  Fall back to ``__call__`` whenever the hint set has no
+    # ``return``; an instance's field annotations must not suppress it.
+    if "return" not in hints and not (
         inspect.isfunction(func) or inspect.ismethod(func) or inspect.isclass(func)
     ):
-        hints = _type_hints(type(func).__call__, localns)
-    if hints is None:
+        call_hints = _type_hints(type(func).__call__, localns) or {}
+        if "return" in call_hints:
+            hints = call_hints
+    if not hints:
         return None
     annotation = hints.get("return", inspect.Signature.empty)
     if annotation is inspect.Signature.empty:
