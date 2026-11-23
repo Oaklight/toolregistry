@@ -129,6 +129,7 @@ class RegistrationMixin:
     _sub_registries: set[str]
     _disabled: dict[str, str]  # Owned by EnableDisableMixin
     _overrides: dict[str, Tool]  # name -> displaced original tool
+    _derive_output_schemas: bool  # Provided by ToolRegistry
     name_sep: NameSeparator  # Provided by ToolRegistry
 
     if TYPE_CHECKING:
@@ -417,6 +418,7 @@ class RegistrationMixin:
                 method_name=method_name,
                 sep=sep,
                 localns=localns,
+                derive_output_schema=self._derive_output_schemas,
             )
         registered_name = registered_tool.name
 
@@ -712,7 +714,11 @@ class RegistrationMixin:
         if isinstance(tool, Tool):
             base = tool
         else:
-            base = Tool.from_function(tool, name=name)
+            base = Tool.from_function(
+                tool,
+                name=name,
+                derive_output_schema=self._derive_output_schemas,
+            )
 
         sep = self.name_sep
         if sep in name:

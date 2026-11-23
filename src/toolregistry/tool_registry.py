@@ -177,6 +177,7 @@ class ToolRegistry(
         think_augment: bool = False,
         tool_discovery: bool = False,
         name_sep: Literal["-", "."] = "-",
+        derive_output_schemas: bool = False,
     ) -> None:
         """Initialize an empty ToolRegistry.
 
@@ -220,6 +221,13 @@ class ToolRegistry(
                 with ``"-"`` or ``"calculator.evaluate"`` with ``"."``).
                 OpenAI requires ``"-"``; some providers allow ``"."``.
                 Defaults to ``"-"``.
+            derive_output_schemas: Derive each registered tool's output schema
+                from its return annotation and store it in
+                ``ToolMetadata.extra["output_schema"]``.  An explicit
+                declaration on the tool always wins, and an annotation that
+                cannot be resolved to a complete schema adds nothing.
+                Defaults to ``False``: publishing an ``outputSchema`` changes
+                what MCP clients see, so enabling it is a deployment choice.
 
         Notes:
             This class uses private attributes `_tools` and `_sub_registries` internally
@@ -257,6 +265,7 @@ class ToolRegistry(
         self._persist_large_results = persist_large_results
         self._result_store = ResultStore() if persist_large_results else None
         self._think_augment = think_augment
+        self._derive_output_schemas = derive_output_schemas
         self._name_sep: Literal["-", "."] = name_sep
         self._tool_discovery: ToolDiscoveryTool | None = None
         self._tool_discovery_mode: Literal["auto", "on", "off"] = "auto"
