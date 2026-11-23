@@ -411,7 +411,9 @@ class ResultStore:
                 except FileExistsError:
                     continue
                 try:
-                    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    # newline="" keeps "\n" as one byte so size_bytes matches
+                    # st_size on platforms that would translate it to "\r\n".
+                    with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
                         stream.write(text)
                         stream.flush()
                         os.fsync(stream.fileno())
