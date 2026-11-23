@@ -19,10 +19,12 @@ if TYPE_CHECKING:
     from .tool import Tool
 from .llm.truncation import (
     CHARS_PER_TOKEN,
+    CONTENT_BLOCK_MARKER_RESERVE,
     DEFAULT_MAX_RESULT_SIZE,
     DEFAULT_READ_RESULT_LIMIT,
     ResultStore,
     truncate_result,
+    truncation_notice,
 )
 from .llm.content_blocks import is_content_block_list
 from .permissions import (
@@ -192,7 +194,8 @@ class ToolRegistry(
                 ``ToolMetadata.max_result_size``. Defaults to
                 :data:`~toolregistry.llm.truncation.DEFAULT_MAX_RESULT_SIZE`
                 (64,000 characters, about 16k tokens); pass ``None`` to
-                disable the default cap.
+                disable the default cap, or ``0`` to truncate every result to
+                the notice alone.
             default_max_result_tokens: Default maximum result size in tokens
                 for all tools, converted to characters with
                 :data:`toolregistry.llm.truncation.CHARS_PER_TOKEN` (a fixed
@@ -1449,6 +1452,13 @@ class ToolRegistry(
                 persist=self._persist_large_results,
                 store=self._result_store,
             )
+            if tr.truncated:
+                logger.info(
+                    "truncated result for %s: %d -> %d chars",
+                    tool_name,
+                    tr.original_size,
+                    len(tr.content),
+                )
             return str(tr)
         return result_str
 
@@ -1466,6 +1476,8 @@ class ToolRegistry(
         Returns:
             The character budget, or ``None`` when no limit applies.
         """
+        # Tool-level limits are keyed by the registered name.  A tool run
+        # under an alias that is not in ``_tools`` uses the registry default.
         tool_obj = self._tools.get(tool_name)
         limits: list[int] = []
 
@@ -1487,12 +1499,17 @@ class ToolRegistry(
 
         return min(limits) if limits else None
 
-    @staticmethod
-    def _truncate_content_blocks(blocks: list, max_size: int, tool_name: str) -> list:
+    def _truncate_content_blocks(
+        self, blocks: list, max_size: int, tool_name: str
+    ) -> list:
         """Truncate text blocks within a content block list.
 
         Image blocks are left untouched.  Text blocks are truncated
-        proportionally so the total text size stays within *max_size*.
+        proportionally so the total text, including a final notice block,
+        stays within *max_size*.  The notice is a text block of its own so a
+        model can see that content was dropped; when
+        ``persist_large_results`` is on it carries the ``read_result`` handle
+        for the full block list.
 
         Args:
             blocks: Content block list.
@@ -1508,18 +1525,22 @@ class ToolRegistry(
         if total_text <= max_size:
             return blocks
 
-        # Allocate the budget proportionally to each text block's size, then
-        # hand any rounding remainder to the earliest blocks.  A text block
-        # is therefore truncated against its own share, not against whatever
-        # an earlier block left over.
+        # The notice is a text block of its own, so its length comes out of
+        # the budget before the remaining text is shared.  A fixed reserve
+        # covers the longest form, which names the persisted result id.
+        content_budget = max(max_size - CONTENT_BLOCK_MARKER_RESERVE, 0)
         text_lengths = [
             len(b.get("text", "")) for b in blocks if b.get("type") == "text"
         ]
-        budgets = [max_size * length // total_text for length in text_lengths]
-        for index in range(max_size - sum(budgets)):
-            budgets[index % len(budgets)] += 1
+        if content_budget:
+            budgets = [content_budget * length // total_text for length in text_lengths]
+            for index in range(content_budget - sum(budgets)):
+                budgets[index % len(budgets)] += 1
+        else:
+            budgets = [0] * len(text_lengths)
 
         truncated: list = []
+        kept_chars = 0
         next_budget = iter(budgets)
         for block in blocks:
             if block.get("type") != "text":
@@ -1528,10 +1549,36 @@ class ToolRegistry(
             text = block.get("text", "")
             budget = next(next_budget)
             if len(text) <= budget:
+                kept_chars += len(text)
                 truncated.append(block)
                 continue
-            tr = truncate_result(text, budget, tool_name=tool_name, persist=False)
-            truncated.append({"type": "text", "text": tr.content})
+            kept = text[:budget]
+            kept_chars += len(kept)
+            truncated.append({"type": "text", "text": kept})
+
+        result_id = None
+        full_path = None
+        if self._persist_large_results and self._result_store is not None:
+            result_id, full_path = self._result_store.put(
+                json.dumps(blocks, ensure_ascii=False, default=str)
+            )
+        truncated.append(
+            {
+                "type": "text",
+                "text": truncation_notice(
+                    total_text,
+                    kept_chars,
+                    result_id=result_id,
+                    full_path=full_path,
+                ),
+            }
+        )
+        logger.info(
+            "truncated multimodal result for %s: %d -> %d chars",
+            tool_name,
+            total_text,
+            kept_chars,
+        )
         return truncated
 
     def set_default_execution_mode(self, mode: Literal["thread", "process"]) -> None:
