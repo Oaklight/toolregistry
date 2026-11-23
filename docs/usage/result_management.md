@@ -68,6 +68,11 @@ Per-tool `max_result_size` takes precedence over the registry default. A tool
 that leaves `max_result_size` at `None` uses the registry default, which is
 64,000 characters unless changed.
 
+The cap is applied when `execute_tool_calls()` finalizes a result. A tool
+invoked directly through `route.handler`, which is how the MCP adapter serves
+it, is not capped yet; see
+[toolregistry-server#286](https://github.com/Oaklight/toolregistry-server/issues/286).
+
 ### Token Budgets
 
 `max_result_tokens` sets the same limit in tokens:
