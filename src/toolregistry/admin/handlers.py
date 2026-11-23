@@ -161,10 +161,9 @@ def _reject_untrusted_host(request: Request) -> Response | None:
     name = _host_name(request.headers.get("host", ""))
     if name is not None and name in allowed:
         return None
-    return _add_cors(
-        request,
-        _error_response(403, "Forbidden", "Untrusted Host header"),
-    )
+    # 421 is the status for a request whose authority this server does not
+    # serve; 403 would describe the caller, not the direction of the request.
+    return _error_response(421, "Misdirected Request", "Untrusted Host header")
 
 
 def _add_cors(request: Request, response: Response) -> Response:
@@ -233,9 +232,9 @@ def _evaluate_tool_permission(
 
 
 def _cors_preflight(request: Request) -> Response | None:
-    """Handle CORS preflight requests."""
+    """Answer a CORS preflight; the after-request hook adds the headers."""
     if request.method == "OPTIONS":
-        return _add_cors(request, Response(status_code=204))
+        return Response(status_code=204)
     return None
 
 
@@ -276,25 +275,16 @@ def _reject_cross_site(request: Request) -> Response | None:
 
     origin = request.headers.get("origin")
     if origin is not None and _same_origin(request) is None:
-        return _add_cors(
-            request,
-            _error_response(403, "Forbidden", "Cross-origin request rejected"),
-        )
+        return _error_response(403, "Forbidden", "Cross-origin request rejected")
 
     if request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
-        return _add_cors(
-            request,
-            _error_response(403, "Forbidden", "Cross-site request rejected"),
-        )
+        return _error_response(403, "Forbidden", "Cross-site request rejected")
 
     if _request_media_type(request) != _JSON_MEDIA_TYPE:
-        return _add_cors(
-            request,
-            _error_response(
-                415,
-                "Unsupported Media Type",
-                "State-changing requests must use Content-Type: application/json",
-            ),
+        return _error_response(
+            415,
+            "Unsupported Media Type",
+            "State-changing requests must use Content-Type: application/json",
         )
     return None
 
@@ -416,7 +406,7 @@ def _auth_check(request: Request) -> Response | None:
             "Too many failed authentication attempts; retry later",
         )
         resp.headers["Retry-After"] = str(max(1, math.ceil(retry_after or 1)))
-        return _add_cors(request, resp)
+        return resp
 
     # Try Bearer token first
     if auth_header:
@@ -424,11 +414,11 @@ def _auth_check(request: Request) -> Response | None:
         if len(parts) != 2 or parts[0].lower() != "bearer":
             resp = _error_response(401, "Unauthorized", "Invalid Authorization format")
             resp.headers["WWW-Authenticate"] = 'Bearer realm="admin"'
-            return _add_cors(request, resp)
+            return resp
         if not auth.verify(parts[1]):
             resp = _error_response(401, "Unauthorized", "Invalid token")
             resp.headers["WWW-Authenticate"] = 'Bearer realm="admin"'
-            return _add_cors(request, resp)
+            return resp
         limiter.release(attempt)
         setattr(request.state, "set_session_cookie", True)
         return None
@@ -444,7 +434,7 @@ def _auth_check(request: Request) -> Response | None:
     limiter.release(attempt)
     resp = _error_response(401, "Unauthorized", "Missing credentials")
     resp.headers["WWW-Authenticate"] = 'Bearer realm="admin"'
-    return _add_cors(request, resp)
+    return resp
 
 
 def _set_session_cookie(request: Request, response: Response) -> None:
@@ -474,17 +464,13 @@ def _after_cors(request: Request, response: Response) -> None:
 
 
 def _handle_404(request: Request, exc: HTTPException) -> Response:
-    """Handle 404 errors with CORS headers."""
-    return _add_cors(
-        request, _error_response(404, "Not Found", f"Path not found: {request.path}")
-    )
+    """Handle 404 errors; the after-request hook adds the headers."""
+    return _error_response(404, "Not Found", f"Path not found: {request.path}")
 
 
 def _handle_405(request: Request, exc: HTTPException) -> Response:
-    """Handle 405 errors with CORS headers."""
-    return _add_cors(
-        request, _error_response(405, "Method Not Allowed", "Method Not Allowed")
-    )
+    """Handle 405 errors; the after-request hook adds the headers."""
+    return _error_response(405, "Method Not Allowed", "Method Not Allowed")
 
 
 # ============== Route Handlers ==============
@@ -1387,7 +1373,7 @@ def _logout(request: Request) -> Response:
     response = Response(status_code=204)
     if app.session is not None:
         response.delete_cookie(app.session.cookie_name, path="/")
-    return _add_cors(request, response)
+    return response
 
 
 def _get_info(request: Request) -> Response:
@@ -1569,15 +1555,12 @@ def _refuse_local_command(request: Request, data: dict[str, Any]) -> Response | 
         return None
     kind = data.get("kind")
     if kind == "python":
-        return _add_cors(
-            request,
-            _error_response(
-                403,
-                "Forbidden",
-                "Refusing to import a module from an unauthenticated admin "
-                "panel; start the server with auth_token=... to allow python "
-                "sources.",
-            ),
+        return _error_response(
+            403,
+            "Forbidden",
+            "Refusing to import a module from an unauthenticated admin "
+            "panel; start the server with auth_token=... to allow python "
+            "sources.",
         )
     if kind != "mcp":
         return None
@@ -1589,15 +1572,12 @@ def _refuse_local_command(request: Request, data: dict[str, Any]) -> Response | 
         return None
     if not spawns:
         return None
-    return _add_cors(
-        request,
-        _error_response(
-            403,
-            "Forbidden",
-            "Refusing to execute a local command from an unauthenticated admin "
-            "panel; start the server with auth_token=... to allow stdio MCP "
-            "sources.",
-        ),
+    return _error_response(
+        403,
+        "Forbidden",
+        "Refusing to execute a local command from an unauthenticated admin "
+        "panel; start the server with auth_token=... to allow stdio MCP "
+        "sources.",
     )
 
 
@@ -2080,6 +2060,9 @@ def setup_routes(app: "AdminApp") -> None:
     app.before_request(_reject_cross_site)
     app.before_request(_cors_preflight)
     app.before_request(_auth_check)
+    # The vendored server runs after-hooks for every response it writes:
+    # handler output, 404/405, before-hook short-circuits and read rejections.
+    # These two therefore need no per-error-path duplication.
     app.after_request(_set_session_cookie)
     app.after_request(_after_cors)
     app.errorhandler(404)(_handle_404)
