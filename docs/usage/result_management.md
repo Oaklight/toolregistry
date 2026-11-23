@@ -123,7 +123,7 @@ token 按每 token 4 个字符的固定估算换算为字符
 发生截断时，发送给 LLM 的结果包含元数据头部：
 
 ```
-[Truncated: 20000 chars -> 2000 chars | full output: res_0123456789ab (read it with read_result)]
+[Truncated: 20000 chars -> 2000 chars | full output: res_0123456789abcdef0123456789abcdef (read it with read_result)]
 输出的开头部分...
 ... (truncated 18000 chars) ...
 ...输出的结尾部分
@@ -143,11 +143,51 @@ token 按每 token 4 个字符的固定估算换算为字符
 
 持久化是可选项。`ToolRegistry(persist_large_results=True)` 会把每次截断的完整结果
 存入私有的按运行目录（目录权限 `0700`，文件权限 `0600`）。头部携带不透明 id
-（`res_<12 hex>`），内置的 `read_result(id, offset=0, limit=8000)` 工具可分页读取
-存储的文本。结果在 24 小时后过期；目录总量上限 64 MiB，超出时按最旧优先淘汰，
-刚写入的文件不会被淘汰，即使它本身就超过配额。
+（`res_<32 hex>`，128 位随机数），内置的 `read_result(id, offset=0, limit=8000)`
+工具可分页读取存储的文本。结果在 24 小时后过期；目录总量上限 64 MiB，超出时按
+最旧优先淘汰，刚写入的文件不会被淘汰，即使它本身就超过配额。
 
 不启用该选项时不会写入磁盘：截断结果只包含截断后的文本。
+
+### 保留策略
+
+```python
+registry = ToolRegistry(
+    persist_large_results=True,
+    result_ttl_seconds=60 * 60,        # 硬过期，从创建时算起
+    result_idle_ttl_seconds=10 * 60,   # 滑动过期，读取会刷新
+    result_quota_bytes=32 * 1024 * 1024,
+)
+```
+
+硬 TTL 是绝对期限，读取不会延长它。空闲 TTL 只在设置后生效，读取会延长它，
+`stat()` 不会。实际过期时间取两者中较早者。也可用
+`result_store=ResultStore(...)` 注入准备好的存储；只要提供 store，即使
+`persist_large_results` 保持 `False` 也会启用持久化，且以 store 自身的保留设置为准。
+
+### 归属作用域
+
+`ResultStore` 可以为每个结果记录归属。`ResultScope(tenant, session)` 标识 API key
+或部署租户，以及逻辑 agent 会话；`session=None` 的作用域表示租户内共享，带 session
+的作用域则只对该会话可见。读取时会校验调用方作用域，因此一个 agent 即使知道 id
+也读不到另一个 agent 的结果。
+
+库模式调用方保持无作用域：
+
+```python
+from toolregistry.llm.truncation import ResultScope, use_result_scope
+
+with use_result_scope(ResultScope(tenant="tenant-a", session="session-1")):
+    ...  # 此处写入的结果会带上该作用域
+```
+
+服务端适配器应显式传入作用域，例如通过
+`ToolRegistry(result_scope_provider=...)` 或按请求绑定，因为执行器的线程和进程
+不会携带上下文变量。`result_scope_policy` 定义约束：`"optional"`（默认）接受
+无作用域写入，`"required"` 要求任意作用域，`"session_required"` 要求带 session。
+在强制策略下缺少作用域会抛出异常，而不是写入一个公开结果。ADR-004 之前的
+`res_<12 hex>` 文件没有归属元数据，默认拒绝读取；`ResultStore(allow_legacy=True)`
+允许无作用域调用方继续读取它们。
 
 ## 编程接口
 
@@ -172,7 +212,7 @@ result = truncate_result(
 
 print(result.truncated)       # True
 print(result.original_size)   # 20000
-print(result.result_id)       # "res_0123456789ab"
+print(result.result_id)       # "res_0123456789abcdef0123456789abcdef"
 print(result.full_path)       # 宿主路径，仅供程序使用
 print(result.content)         # 截断后的内容
 print(str(result))            # 头部给出 id，绝不给出路径
@@ -180,9 +220,12 @@ print(str(result))            # 头部给出 id，绝不给出路径
 
 `truncate_result` 同样执行内容感知规则；需要自行换算 token 预算的调用方可以使用
 导出的 `CHARS_PER_TOKEN`。`persist=True` 且未传 `store` 时使用进程级的
-`default_result_store()`；传入自己的 `ResultStore` 可指定目录、TTL 与配额。注册表
-内置的 `read_result` 只读取该注册表存储的结果，因此直接调用 `truncate_result` 时
-必须用同一个 store 读回。
+`default_result_store()`；传入自己的 `ResultStore` 可指定目录、TTL 与配额，结果
+属于某个租户或会话时再传入 `scope=`。`ResultStore` 还提供 `put_result()`，返回
+包含 id、大小、SHA-256、内容类型、工具名、归属与时间戳的 `ResultInfo`，以及
+`stat(result_id, scope=...)`，读取同样的元数据但不会延长空闲 TTL。注册表内置的
+`read_result` 只读取该注册表存储的结果，因此直接调用 `truncate_result` 时必须用
+同一个 store 读回。
 
 ### TruncatedResult 字段
 
