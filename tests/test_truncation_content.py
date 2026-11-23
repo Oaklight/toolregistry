@@ -7,6 +7,7 @@ import pytest
 from toolregistry import Tool, ToolRegistry, ToolMetadata
 from toolregistry.llm.truncation import (
     CHARS_PER_TOKEN,
+    DEFAULT_MAX_RESULT_SIZE,
     TruncationStrategy,
     truncate_result,
 )
@@ -113,7 +114,10 @@ class TestResultSizeValidation:
 
     def test_registry_allows_zero_and_none_caps(self):
         assert ToolRegistry(default_max_result_size=0)._result_char_budget("x") == 0
-        assert ToolRegistry()._result_char_budget("x") is None
+        assert ToolRegistry()._result_char_budget("x") == DEFAULT_MAX_RESULT_SIZE
+        assert (
+            ToolRegistry(default_max_result_size=None)._result_char_budget("x") is None
+        )
         assert ToolRegistry(default_max_result_tokens=0)._result_char_budget("x") == 0
 
 

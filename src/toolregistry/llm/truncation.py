@@ -18,6 +18,12 @@ from typing import Any
 #: order-of-magnitude guard, while ``max_result_size`` is the exact limit.
 CHARS_PER_TOKEN = 4
 
+#: Character budget a registry applies when no other limit is configured.
+#: At :data:`CHARS_PER_TOKEN` this is about 16k tokens.  A tool's own
+#: ``max_result_size`` or ``max_result_tokens`` still overrides it, and
+#: ``ToolRegistry(default_max_result_size=None)`` disables the default cap.
+DEFAULT_MAX_RESULT_SIZE = 64_000
+
 #: Marker budget reserved for the line-aware omission notice.
 _LINE_MARKER_RESERVE = 48
 

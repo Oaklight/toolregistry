@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .tool import Tool
 from .llm.truncation import (
     CHARS_PER_TOKEN,
+    DEFAULT_MAX_RESULT_SIZE,
     DEFAULT_READ_RESULT_LIMIT,
     ResultStore,
     truncate_result,
@@ -171,7 +172,7 @@ class ToolRegistry(
         self,
         name: str | None = None,
         *,
-        default_max_result_size: int | None = None,
+        default_max_result_size: int | None = DEFAULT_MAX_RESULT_SIZE,
         default_max_result_tokens: int | None = None,
         persist_large_results: bool = False,
         think_augment: bool = False,
@@ -188,7 +189,10 @@ class ToolRegistry(
                 "reg_<4-char>" string. For instance, "reg_1a3c".
             default_max_result_size: Default maximum result size in characters
                 for all tools. Individual tools can override this via
-                ``ToolMetadata.max_result_size``. None means no limit.
+                ``ToolMetadata.max_result_size``. Defaults to
+                :data:`~toolregistry.llm.truncation.DEFAULT_MAX_RESULT_SIZE`
+                (64,000 characters, about 16k tokens); pass ``None`` to
+                disable the default cap.
             default_max_result_tokens: Default maximum result size in tokens
                 for all tools, converted to characters with
                 :data:`toolregistry.llm.truncation.CHARS_PER_TOKEN` (a fixed
