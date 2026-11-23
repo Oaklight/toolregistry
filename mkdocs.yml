@@ -137,6 +137,7 @@ nav:
           - 工具发现: usage/tool_discovery.md
           - 理由增强调用: usage/think_augmented.md
           - 结果大小管理: usage/result_management.md
+          - 输出 Schema: usage/output_schema.md
           - 权限系统: usage/permissions.md
           - 消息构建: usage/message_building.md
           - 声明式配置: usage/configuration.md
