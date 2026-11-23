@@ -33,6 +33,13 @@ A shared registry therefore has a cross-agent read and eviction problem.
 The `read_result` tool is registered once on the shared registry and accepts
 only an id, so any caller that learns an id can read the full result.
 
+The exposure is not live yet.  `toolregistry-server` builds `ToolRegistry()`
+with the default `persist_large_results=False`, so `_result_store` is `None`,
+`read_result` is not registered, and no server-mode result reaches disk.  The
+exposure arrives when the server adapter applies result caps (server #286 /
+#287).  **#287 must not ship before Phase 1**, because that change starts
+writing agent results into a store every key can reach.
+
 ## Decision
 
 ### 1. Visibility is a server-side security boundary
@@ -58,9 +65,12 @@ class ResultScope:
   mechanism.
 - Executor backends do not carry caller context: the thread pool submits
   without `copy_context()`, and the process pool cannot cross a context
-  variable at all.  A tool body that needs the store must receive a
-  serializable scope through `ExecutionContext` or an explicit parameter.
-  Reading the context variable inside a pooled tool reads `None`.
+  variable at all.  A tool body that needs the store must receive the plain
+  `ResultScope` as an explicit parameter, or run through a per-request handler
+  that closes over it.  `ExecutionContext` is not a carrier: it holds a
+  `threading.Event` and callbacks, is not picklable, and the process backend
+  injects nothing.  Reading the context variable inside a pooled tool reads
+  `None`.
 - The registry-level `read_result` tool is the library fallback.  Server
   adapters bind a per-request handler that closes over the caller's scope:
   MCP uses the existing `handler_factory`, and OpenAPI calls a scope-aware
@@ -85,12 +95,19 @@ state           active / ended / expired
 ```
 
 - An MCP transport session maps to one logical session when it is created.
-- Reconnects may resume a logical session with a signed session token; a new
-  transport session without that token creates a new logical session.
+  The adapter returns the signed logical-session token in the `initialize`
+  result `_meta`; the client sends it on reconnect as
+  `X-Agent-Session-Token`.  `Mcp-Session-Id` remains the transport id and is
+  not the logical session id.
 - OpenAPI is stateless.  The caller obtains a server-issued, signed,
-  principal-bound, expiring token from `POST /sessions`.  `X-Agent-Session`
-  may be sent as a client-side label, but a bare header is never identity and
-  never part of authorization.
+  principal-bound, expiring token from `POST /sessions`.  The token travels
+  in `X-Agent-Session-Token`; `Authorization` remains the API key.
+  `X-Agent-Session` may be sent as a client-side label, but a bare header is
+  never identity and never part of authorization.  The session token is a
+  bearer credential for that session's results: short TTL, rotation,
+  revocation, and never logged.
+- A caller with an API key but no session token gets no separation from other
+  callers of that key.  That mode is only for migration.
 - `result_scope_policy` has three values.  `"optional"` is library mode.
   `"required"` requires a scope object; a tenant-only scope `(t, None)` passes.
   `"session_required"` requires a non-empty session and refuses a tenant-only
@@ -143,6 +160,15 @@ Scope containment is asymmetric:
 - A tenant-only caller cannot read a session-private record.  This keeps a
   pre-token result readable after the caller obtains a token while keeping a
   session result isolated.
+
+Tenant-shared records are a migration compatibility window, not the privacy
+model.  Under `required`, a tenant-only write is visible to every caller in
+the tenant, so "two sessions of one key cannot read each other's results"
+holds only when both results were written with a session.  Session privacy is
+guaranteed only by `session_required`.  Mixed clients (MCP with sessions,
+OpenAPI before `POST /sessions` is deployed) should set `required` while
+treating tenant-shared results as non-sensitive, then switch to
+`session_required` once every client carries a session token.
 
 Unknown and unauthorized results return the same error.  This prevents the
 tool from becoming an existence oracle.
@@ -309,6 +335,8 @@ no server changes are required yet.
 
 Goal: isolate agents that share one registry.
 
+- Gate server #287 behind this phase.  Until Phase 1 lands, the server keeps
+  `persist_large_results=False` and writes no result store.
 - Bind scope to `(principal.key_id, logical session_id)` in MCP.  The operator
   is an override, not part of the scope key.
 - Add `POST /sessions`, returning a signed, principal-bound, expiring session
@@ -332,12 +360,13 @@ Goal: isolate agents that share one registry.
   idle and hard TTL.  Resume requires the signed token before grace expiry.
 - Enable per-tenant encryption for hosted multi-customer deployments.
 
-Acceptance: two keys cannot read each other's results; two sessions of one
-key cannot read each other's results; a caller in a tenant can read that
-tenant's tenant-shared results but not another session's private result;
-disconnect plus grace expiry removes results; a resume before grace reaches
-the same logical session; one tenant cannot evict another tenant's live
-result; quota pressure leaves the tool call successful with truncated output.
+Acceptance: two keys cannot read each other's results; under
+`session_required`, two sessions of one key cannot read each other's results;
+a caller in a tenant can read that tenant's tenant-shared results but not
+another session's private result; disconnect plus grace expiry removes
+results; a resume before grace reaches the same logical session; one tenant
+cannot evict another tenant's live result; quota pressure leaves the tool call
+successful with truncated output.
 
 ### Phase 2 — Access ergonomics
 
@@ -358,6 +387,8 @@ audience and expiry.
 Goal: survive restarts and serve multiple processes.
 
 - SQLite index plus content-addressed blobs, with reference counts.
+- Blobs are namespaced per tenant.  Never deduplicate content across tenants;
+  a shared blob id or size is a side channel.
 - Multi-process locks and leases.
 - Per-tenant encryption at rest for deployments that did not enable it in
   Phase 1.
@@ -403,12 +434,14 @@ compare-and-swap, and keep ownership tied to the authenticated principal.
 ## Resolved choices
 
 1. **OpenAPI identity.** `POST /sessions` returns a signed, principal-bound,
-   expiring token.  `X-Agent-Session` is a client-side label only; a bare
-   header never establishes identity.
+   expiring token, sent as `X-Agent-Session-Token`.  `Authorization` stays the
+   API key; `X-Agent-Session` is a client-side label only.  Session privacy is
+   guaranteed only under `session_required`.
 2. **Reconnect retention.** Results survive a transport reconnect by default,
-   tied to the logical session and bounded by idle and hard TTL.  Resume must
-   happen before the disconnect grace expires.  An explicit end revokes
-   immediately.
+   tied to the logical session and bounded by idle and hard TTL.  MCP returns
+   the signed token in the `initialize` result `_meta`; the client sends it as
+   `X-Agent-Session-Token` on reconnect.  Resume must happen before the
+   disconnect grace expires.  An explicit end revokes immediately.
 3. **Tenant trust.** The default is one operator and many agents.  Hosted
    multi-customer deployments enable per-tenant encryption in Phase 1; other
    deployments get it in Phase 3.
