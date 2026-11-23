@@ -474,8 +474,8 @@ def _dict_schema(
     """Convert ``dict[str, T]`` into an open object schema.
 
     A mapping subclass may be parameterized with only a key type
-    (``Counter[str]``).  Its value shape is unknown, so it publishes the same
-    open object as the bare class rather than nothing.
+    (``Counter[str]``).  The annotation then states no value type, so it
+    publishes the same open object as the bare class rather than nothing.
     """
     if not args:
         return {"type": "object"}
@@ -599,7 +599,9 @@ def derive_output_schema(
     if not callable(func):
         return None
     hints = _type_hints(func, localns)
-    if hints is None and not (
+    # Python 3.14 returns an empty mapping for an instance instead of raising,
+    # so treat an empty result like a failed introspection for this fallback.
+    if not hints and not (
         inspect.isfunction(func) or inspect.ismethod(func) or inspect.isclass(func)
     ):
         hints = _type_hints(type(func).__call__, localns)
