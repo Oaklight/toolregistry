@@ -30,7 +30,7 @@ hide:
 
 - **注册表默认应用结果上限**（#418）：`ToolRegistry()` 现在会截断超过 `DEFAULT_MAX_RESULT_SIZE`（64,000 个字符，按文档估算约为 16k token）的结果，而不再默认不限制。传入 `default_max_result_size=None` 可恢复旧版的不限制行为，或设置其他默认值。工具级限制仍然优先，更严格的 token 预算仍然生效。这是超大结果 RFC 中 L5 的有意行为变更；L1 的生产端分页仍由 hub 工具负责。该上限覆盖经 `execute_tool_calls()` 完成的结果，即 provider 与 agent 循环；直接经 `route.handler` 调用的工具（MCP 适配器路径）尚未应用该上限，见 [toolregistry-server#286](https://github.com/Oaklight/toolregistry-server/issues/286)。多模态结果现在会在末尾保留一个携带截断提示的文本块；开启 `persist_large_results` 时，提示中的 `read_result` 句柄可读取完整块列表。
 
-- **Vendored 的 zerodep 模块跟进 2026.11.20 版本**（#476）：`skills` 为 0.5.1，`frontmatter` 为 0.3.1，现有 `yaml` 依赖升级到 0.4.0；该版本新增 PyYAML 的 `safe_load`/`safe_dump` 别名，解析行为不变。锁文件固定到源码提交 `879100d489fd91657c3ee31c569ec39bb0034bd8`（zerodep #324）。
+- **Vendored 的 zerodep 模块跟进 2026.11.20 版本**（#476）：`skills` 为 0.5.1，`frontmatter` 为 0.3.1，现有 `yaml` 依赖升级到 0.4.0；该版本新增 PyYAML 的 `safe_load`/`safe_dump` 别名，解析行为不变。该模块集来自 zerodep `v2026.11.20` 发行版；#486 从同一 tag 更新网络模块。
 
 ## [0.21.0] - 2026-11-09
 
